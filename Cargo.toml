@@ -64,6 +64,12 @@ nydus-storage = { version = "0.5.0", path = "storage" }
 nydus-utils = { version = "0.3.0", path = "utils" }
 nydus-blobfs = { version = "0.1.0", path = "blobfs", features = ["virtiofs"], optional = true }
 
+
+upgrade = { path = "upgrade" }
+snapshot = { git = "https://code.byted.org/containerimage/snapshot.git", branch = "master" }
+versionize = ">=0.1.6"
+versionize_derive = ">=0.1.3"
+
 [dev-dependencies]
 sendfd = "0.3.3"
 env_logger = "0.8.2"
@@ -73,8 +79,9 @@ rand = "0.8.5"
 default = ["fuse-backend-rs/fusedev"]
 virtiofs = ["fuse-backend-rs/vhost-user-fs", "vm-memory", "vhost", "vhost-user-backend", "virtio-queue", "virtio-bindings"]
 
+
 [workspace]
-members = ["api", "app", "error", "rafs", "storage", "utils", "blobfs"]
+members = ["api", "app", "error", "rafs", "storage", "utils", "blobfs", "upgrade"]
 
 
 [patch.crates-io]

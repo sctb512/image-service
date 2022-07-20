@@ -1067,13 +1067,17 @@ dependencies = [
  "regex",
  "rlimit",
  "rust-fsm",
- "sendfd",
+ "sendfd 0.3.3",
  "serde",
  "serde_json",
  "sha2",
+ "snapshot",
  "tar",
  "time",
  "tokio",
+ "upgrade",
+ "versionize",
+ "versionize_derive",
  "vhost",
  "vhost-user-backend",
  "virtio-bindings",
@@ -1526,6 +1530,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sendfd"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "604b71b8fc267e13bb3023a2c901126c8f349393666a6d98ac1ae5729b701798"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.139"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1883,6 +1896,17 @@ name = "unicode-width"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ed742d4ea2bd1176e236172c8429aaf54486e7ac098db29ffe6529e0ce50973"
+
+[[package]]
+name = "upgrade"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "sendfd 0.4.3",
+ "snapshot",
+ "versionize",
+ "versionize_derive",
+]
 
 [[package]]
 name = "url"
