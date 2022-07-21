@@ -29,7 +29,7 @@ impl From<DaemonError> for DaemonErrorKind {
     fn from(e: DaemonError) -> Self {
         use DaemonError::*;
         match e {
-            UpgradeManager(_) => DaemonErrorKind::UpgradeManager,
+            UpgradeManager(e) => DaemonErrorKind::UpgradeManager(format!("{:?}", e)),
             NotReady => DaemonErrorKind::NotReady,
             Unsupported => DaemonErrorKind::Unsupported,
             Serde(e) => DaemonErrorKind::Serde(e),
