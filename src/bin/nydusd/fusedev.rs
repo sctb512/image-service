@@ -6,6 +6,7 @@
 use std::any::Any;
 use std::ffi::{CStr, CString};
 use std::fs::metadata;
+use std::fs::File;
 use std::io::{Error, Result};
 use std::ops::Deref;
 #[cfg(target_os = "linux")]
@@ -270,6 +271,10 @@ impl FusedevDaemon {
         self.fuse_service_threads.lock().unwrap().push(thread);
 
         Ok(())
+    }
+
+    pub fn restore_session(&self, f: File) {
+        self.service.session.lock().unwrap().set_fuse_file(f)
     }
 }
 
@@ -551,6 +556,7 @@ pub fn create_fuse_daemon(
         if let Some(cmd) = mount_cmd {
             daemon.service.mount(cmd)?;
         }
+
         daemon
             .service
             .session
@@ -558,6 +564,17 @@ pub fn create_fuse_daemon(
             .unwrap()
             .mount()
             .map_err(|e| eother!(e))?;
+
+        if let Some(f) = daemon.service.session.lock().unwrap().get_fuse_file() {
+            if let Some(m) = daemon.service.upgrade_mgr() {
+                // Not expect poisoned lock here.
+                m.inner.lock().unwrap().hold_file(f).map_err(|e| {
+                    error!("Failed to hold fusedev fd, {:?}", e);
+                    eother!(e)
+                })?;
+            }
+        }
+
         daemon
             .on_event(DaemonStateMachineInput::Mount)
             .map_err(|e| eother!(e))?;

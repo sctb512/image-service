@@ -273,6 +273,10 @@ pub mod fusedev_upgrade {
                     warn!("No VFS states!");
                 }
 
+                if let Some(f) = mgr.return_file() {
+                    daemon.restore_session(f)
+                }
+
                 return Ok(());
             }
         }
