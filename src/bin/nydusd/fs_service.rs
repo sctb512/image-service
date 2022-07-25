@@ -174,6 +174,8 @@ pub trait FsService: Send + Sync {
         Ok(resp)
     }
     fn export_inflight_ops(&self) -> DaemonResult<Option<String>>;
+
+    fn recover_io(&self) -> DaemonResult<()>;
 }
 
 /// Validate prefetch file list from user input.
