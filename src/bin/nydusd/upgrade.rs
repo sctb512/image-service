@@ -86,6 +86,8 @@ impl UpgradeManager {
 
         let vm = VersionMap::new();
 
+        info!("version map info: {:?}", vm);
+
         let inner = BytedUpgradeManager::new(vm, Arc::new(s));
 
         UpgradeManager {
