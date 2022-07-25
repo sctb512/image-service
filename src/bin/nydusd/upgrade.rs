@@ -1,15 +1,15 @@
 use std::convert::TryFrom;
+use std::io::Cursor;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use fuse_backend_rs::api::VfsIndex;
-use snapshot::Persist;
+use snapshot::{Persist, Snapshot};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 
-use fuse_backend_rs::api::vfs::Vfs;
+use fuse_backend_rs::api::{vfs::Vfs, VfsIndex};
 
 use nydus::FsBackendType;
 
@@ -26,6 +26,13 @@ const VFS_STATE_ID_PREFIX: &str = "VFS.";
 
 pub struct UpgradeManager {
     pub(crate) inner: Arc<Mutex<BytedUpgradeManager>>,
+}
+
+impl UpgradeManager {
+    fn inner(&mut self) -> MutexGuard<BytedUpgradeManager> {
+        // Not expect poisoned lock
+        self.inner.lock().unwrap()
+    }
 }
 
 pub struct VfsIndexedMounts {
@@ -135,25 +142,53 @@ pub fn add_mounts_state(
     mount_state_id.push_str(&cmd.mountpoint);
 
     // Not expected poisoned lock here.
-    mgr.inner
-        .lock()
-        .unwrap()
-        .deref_mut()
+    mgr.inner()
         .save_state(&mount_state_id, &wrapper)
         .map_err(DaemonError::UpgradeManager)
 }
 
-pub fn update_mounts_state(_mgr: &mut UpgradeManager, _cmd: FsBackendMountCmd) -> DaemonResult<()> {
+pub fn update_mounts_state(mgr: &mut UpgradeManager, cmd: FsBackendMountCmd) -> DaemonResult<()> {
+    // Safe to unwrap since it is native string.
+    let mut mount_state_id = String::from_str(MOUNT_STATE_ID_PREFIX).unwrap();
+    mount_state_id.push_str(&cmd.mountpoint);
+
+    // update method does not provide vfs index. So the state must be found.
+    let old_state = mgr
+        .inner()
+        .restore_state(&mount_state_id)
+        .map_err(|e| {
+            error!("Restore state error");
+            DaemonError::UpgradeManager(e)
+        })?
+        .ok_or(DaemonError::NotFound)?;
+
+    let old_state_len = old_state.len();
+    let mut cursor = Cursor::new(old_state);
+    let vm = mgr.inner().get_version_map();
+
+    let old_wrapper: MountStateWrapper = Snapshot::load(&mut cursor, old_state_len, vm)
+        .map_err(|e| {
+            error!("Failed to restore a single mount state, {:?}", e);
+            UpgradeMgrError::Snapshot(e)
+        })
+        .map_err(DaemonError::UpgradeManager)?;
+
+    let new_wrapper = MountStateWrapper {
+        vfs_index: old_wrapper.vfs_index,
+        cmd: cmd.save(),
+    };
+
+    // Not expected poisoned lock here.
+    mgr.inner()
+        .save_state(&mount_state_id, &new_wrapper)
+        .map_err(DaemonError::UpgradeManager)?;
+
     Ok(())
 }
 
 pub fn remove_mounts_state(mgr: &mut UpgradeManager, cmd: FsBackendUmountCmd) -> DaemonResult<()> {
     // Not expected poisoned lock here.
-    mgr.inner
-        .lock()
-        .unwrap()
-        .deref_mut()
-        .remove_state(&cmd.mountpoint);
+    mgr.inner().deref_mut().remove_state(&cmd.mountpoint);
 
     Ok(())
 }
@@ -164,9 +199,7 @@ pub fn save_vfs_states(mgr: &mut UpgradeManager, vfs: &Vfs) -> DaemonResult<()> 
     state_id.push_str("vfs");
     let vfs_states = vfs.save();
     // Not expected poisoned lock here.
-    mgr.inner
-        .lock()
-        .unwrap()
+    mgr.inner()
         .save_state(&state_id, &vfs_states)
         .map_err(DaemonError::UpgradeManager)
 }
