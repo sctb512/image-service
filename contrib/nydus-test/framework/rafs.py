@@ -596,8 +596,11 @@ class NydusDaemon(utils.ArtifactProcess):
     def _set_default_mount_param(self):
         # Set default part
         self.apisock("api_sock").log_level(self.anchor.log_level)
+
+        self.params.mountpoint(self.mountpoint)
+
         if self.conf is not None:
-            self.params.mountpoint(self.mountpoint).config(self.conf.path())
+            self.params.config(self.conf.path())
 
         if self.rafs_image is not None:
             self.params.bootstrap(self.rafs_image.bootstrap_path)
