@@ -45,7 +45,7 @@ use crate::upgrade::{self, FailoverPolicy, UpgradeManager};
 use crate::DAEMON_CONTROLLER;
 
 // Per as linux kernel ioctl function signature, i32 should work fine.
-const FUSE_RESEND_IOCTL_MSG_CODE: u32 = 2147804672;
+const FUSE_RESEND_IOCTL_MSG_CODE: u32 = 58879;
 
 #[derive(Serialize)]
 struct FuseOp {
