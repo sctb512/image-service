@@ -2,7 +2,7 @@ import os
 import pytest
 import utils
 from utils import kill_all_processes, logging_setup, Size, Unit
-from rafs import Backend, RafsConf, RafsImage, RafsMount, Compressor
+from rafs import Backend, RafsConf, RafsImage, NydusDaemon, Compressor
 import time
 import tempfile
 from supervisor import RafsSupervisor
@@ -46,7 +46,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
     dist.generate_tree()
     dist.put_single_file(Size(8, Unit.MB))
     victim = dist.files[0]
-    victim_path = os.path.join(nydus_anchor.mount_point, victim)
+    victim_path = os.path.join(nydus_anchor.mountpoint, victim)
 
     nydus_scratch_image.set_backend(Backend.BACKEND_PROXY).create_image()
 
@@ -55,7 +55,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
     rafs_conf.enable_rafs_blobcache()
     rafs_conf.enable_fs_prefetch()
 
-    rafs1 = RafsMount(nydus_anchor, nydus_scratch_image, rafs_conf)
+    rafs1 = NydusDaemon(nydus_anchor, nydus_scratch_image, rafs_conf)
     nc = NydusAPIClient(rafs1.get_apisock())
 
     rafs1.supervisor(watch_sock_path).id("old-daemon").thread_num(8).mount()
@@ -65,7 +65,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
     victim_fd = os.open(victim_path, os.O_RDONLY)
     os.read(victim_fd, 100000)
 
-    workload_gen = WorkloadGen(nydus_anchor.mount_point, nydus_scratch_image.rootfs())
+    workload_gen = WorkloadGen(nydus_anchor.mountpoint, nydus_scratch_image.rootfs())
     workload_gen.setup_workload_generator()
     workload_gen.torture_read(8, 8)
 
@@ -83,7 +83,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
 
     inspect_sys_fuse()
     rafs2 = (
-        RafsMount(nydus_anchor, nydus_scratch_image, rafs_conf)
+        NydusDaemon(nydus_anchor, nydus_scratch_image, rafs_conf)
         .prefetch_files("/")
         .thread_num(6)
     )
@@ -102,7 +102,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
     os.read(victim_fd, 100000)
 
     os.close(victim_fd)
-    assert rafs1.mount_point == rafs2.mount_point
+    assert rafs1.mountpoint == rafs2.mountpoint
 
     inspect_sys_fuse()
 
@@ -119,7 +119,7 @@ def test_upgrade(nydus_anchor: NydusAnchor, rafs_conf: RafsConf, nydus_scratch_i
     nc2.do_exit()
     rafs_supervisor.send_fd()
     rafs3 = (
-        RafsMount(nydus_anchor, nydus_scratch_image, rafs_conf)
+        NydusDaemon(nydus_anchor, nydus_scratch_image, rafs_conf)
         .prefetch_files("/")
         .thread_num(12)
     )
@@ -163,11 +163,11 @@ def test_failover(
     dist.generate_tree()
     dist.put_single_file(Size(8, Unit.MB))
     victim = dist.files[0]
-    victim_path = os.path.join(nydus_anchor.mount_point, victim)
+    victim_path = os.path.join(nydus_anchor.mountpoint, victim)
 
     nydus_scratch_image.set_backend(Backend.BACKEND_PROXY).create_image()
 
-    rafs1 = RafsMount(nydus_anchor, nydus_scratch_image, rafs_conf)
+    rafs1 = NydusDaemon(nydus_anchor, nydus_scratch_image, rafs_conf)
     rafs1.supervisor(watch_sock_path).id("old-daemon").thread_num(8).mount()
     assert rafs1.is_mounted()
     time.sleep(1)
@@ -189,7 +189,7 @@ def test_failover(
 
     inspect_sys_fuse()
 
-    workload_gen = WorkloadGen(nydus_anchor.mount_point, nydus_scratch_image.rootfs())
+    workload_gen = WorkloadGen(nydus_anchor.mountpoint, nydus_scratch_image.rootfs())
     workload_gen.setup_workload_generator()
     workload_gen.torture_read(10, 16)
 
@@ -199,7 +199,7 @@ def test_failover(
 
     rafs_supervisor.send_fd()
 
-    rafs2 = RafsMount(nydus_anchor, nydus_scratch_image, rafs_conf)
+    rafs2 = NydusDaemon(nydus_anchor, nydus_scratch_image, rafs_conf)
     rafs2.supervisor(watch_sock_path).id("new-daemon").thread_num(8).failover_policy(
         failover_policy
     ).mount()
@@ -242,7 +242,7 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
     dist1.put_multiple_files(100, Size(1, Unit.MB))
     dist1.put_single_file(Size(4, Unit.MB))
     victim1 = dist1.files[0]
-    victim1_path = os.path.join(nydus_anchor.mount_point, "rafs1", victim1)
+    victim1_path = os.path.join(nydus_anchor.mountpoint, "rafs1", victim1)
     rafs_image1 = RafsImage(
         nydus_anchor, rootfs_1.name, compressor=Compressor.LZ4_BLOCK
     )
@@ -255,7 +255,7 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
     dist2.put_multiple_files(80, Size(1, Unit.MB))
     dist2.put_single_file(Size(4, Unit.MB))
     victim2 = dist2.files[0]
-    victim2_path = os.path.join(nydus_anchor.mount_point, "rafs2", victim2)
+    victim2_path = os.path.join(nydus_anchor.mountpoint, "rafs2", victim2)
     rafs_image2 = RafsImage(
         nydus_anchor, rootfs_2.name, compressor=Compressor.LZ4_BLOCK
     )
@@ -268,12 +268,12 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
     dist3.put_multiple_files(90, Size(1, Unit.MB))
     dist3.put_single_file(Size(4, Unit.MB))
     victim3 = dist3.files[0]
-    victim3_path = os.path.join(nydus_anchor.mount_point, "rafs3", victim3)
+    victim3_path = os.path.join(nydus_anchor.mountpoint, "rafs3", victim3)
     rafs_image3 = RafsImage(nydus_anchor, rootfs_3.name, compressor=Compressor.NONE)
     rafs_image3.set_backend(Backend.BACKEND_PROXY).create_image()
 
     daemon = (
-        RafsMount(nydus_anchor, None, rafs_conf)
+        NydusDaemon(nydus_anchor, None, rafs_conf)
         .supervisor(watch_sock_path)
         .id("old-daemon")
         .thread_num(8)
@@ -297,19 +297,19 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
     os.read(victim2_fd, 10000)
 
     workload_gen1 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs1"), rafs_image1.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs1"), rafs_image1.rootfs()
     )
     workload_gen1.setup_workload_generator()
     workload_gen1.torture_read(8, 8)
 
     workload_gen2 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs2"), rafs_image2.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs2"), rafs_image2.rootfs()
     )
     workload_gen2.setup_workload_generator()
     workload_gen2.torture_read(8, 8)
 
     workload_gen3 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs3"), rafs_image3.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs3"), rafs_image3.rootfs()
     )
     workload_gen3.setup_workload_generator()
     workload_gen3.torture_read(8, 8)
@@ -331,7 +331,7 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
 
     inspect_sys_fuse()
     daemon2 = (
-        RafsMount(nydus_anchor, None, rafs_conf)
+        NydusDaemon(nydus_anchor, None, rafs_conf)
         .prefetch_files("/")
         .thread_num(6)
         .apisock("new-apisock")
@@ -367,7 +367,7 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
 
     rafs_supervisor.send_fd()
     daemon3 = (
-        RafsMount(nydus_anchor, None, rafs_conf)
+        NydusDaemon(nydus_anchor, None, rafs_conf)
         .prefetch_files("/")
         .thread_num(6)
         .apisock("new-apisock3")
@@ -424,7 +424,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     dist1.put_multiple_files(100, Size(1, Unit.MB))
     dist1.put_single_file(Size(4, Unit.MB))
     victim1 = dist1.files[0]
-    victim1_path = os.path.join(nydus_anchor.mount_point, "rafs1", victim1)
+    victim1_path = os.path.join(nydus_anchor.mountpoint, "rafs1", victim1)
     rafs_image1 = RafsImage(
         nydus_anchor, rootfs_1.name, compressor=Compressor.LZ4_BLOCK
     )
@@ -437,7 +437,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     dist2.put_multiple_files(80, Size(1, Unit.MB))
     dist2.put_single_file(Size(4, Unit.MB))
     victim2 = dist2.files[0]
-    victim2_path = os.path.join(nydus_anchor.mount_point, "rafs2", victim2)
+    victim2_path = os.path.join(nydus_anchor.mountpoint, "rafs2", victim2)
     rafs_image2 = RafsImage(
         nydus_anchor, rootfs_2.name, compressor=Compressor.LZ4_BLOCK
     )
@@ -450,12 +450,12 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     dist3.put_multiple_files(90, Size(1, Unit.MB))
     dist3.put_single_file(Size(4, Unit.MB))
     victim3 = dist3.files[0]
-    victim3_path = os.path.join(nydus_anchor.mount_point, "rafs3", victim3)
+    victim3_path = os.path.join(nydus_anchor.mountpoint, "rafs3", victim3)
     rafs_image3 = RafsImage(nydus_anchor, rootfs_3.name, compressor=Compressor.NONE)
     rafs_image3.set_backend(Backend.BACKEND_PROXY).create_image()
 
     daemon = (
-        RafsMount(nydus_anchor, None, rafs_conf)
+        NydusDaemon(nydus_anchor, None, rafs_conf)
         .supervisor(watch_sock_path)
         .id("old-daemon")
         .thread_num(8)
@@ -482,19 +482,19 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     os.read(victim2_fd, 10000)
 
     workload_gen1 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs1"), rafs_image1.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs1"), rafs_image1.rootfs()
     )
     workload_gen1.setup_workload_generator()
     workload_gen1.torture_read(8, 8)
 
     workload_gen2 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs2"), rafs_image2.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs2"), rafs_image2.rootfs()
     )
     workload_gen2.setup_workload_generator()
     workload_gen2.torture_read(8, 8)
 
     workload_gen3 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs3"), rafs_image3.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs3"), rafs_image3.rootfs()
     )
     workload_gen3.setup_workload_generator()
     workload_gen3.torture_read(8, 8)
@@ -518,7 +518,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
 
     inspect_sys_fuse()
     daemon2 = (
-        RafsMount(nydus_anchor, None, None)
+        NydusDaemon(nydus_anchor, None, None)
         .thread_num(6)
         .apisock("new-apisock")
         .supervisor(watch_sock_path)
@@ -551,7 +551,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     nc2.get_wait_daemon()
 
     workload_gen4 = WorkloadGen(
-        os.path.join(nydus_anchor.mount_point, "rafs2"), rafs_image2.rootfs()
+        os.path.join(nydus_anchor.mountpoint, "rafs2"), rafs_image2.rootfs()
     )
     workload_gen4.setup_workload_generator()
     workload_gen4.torture_read(8, 8)
@@ -561,7 +561,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     utils.kill_all_processes("nydusd")
 
     daemon3 = (
-        RafsMount(nydus_anchor, None, None)
+        NydusDaemon(nydus_anchor, None, None)
         .thread_num(6)
         .apisock("new-apisock3")
         .supervisor(watch_sock_path)
