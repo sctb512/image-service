@@ -272,3 +272,311 @@ impl UpgradeManager {
         UpgradeManager::restore(args, &state)
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use std::any::TypeId;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use snapshot::{Error as SnapshotError, Snapshot};
+    use versionize::{VersionMap, Versionize, VersionizeResult};
+    use versionize_derive::Versionize;
+
+    use super::UpgradeManagerError;
+    use crate::states_storage::mem_storage::MemoryStatesStorage;
+
+    use super::UpgradeManager;
+
+    impl SS2 {
+        fn default_ss2_state_d(_target_version: u16) -> u64 {
+            0x1234
+        }
+    }
+
+    #[derive(Versionize, Clone)]
+    struct SS1 {
+        a: u32,
+        b: String,
+        c: f64,
+    }
+
+    #[derive(Versionize, Clone)]
+    struct SS1NoVersionHint {
+        a: u32,
+        b: String,
+        d: u64,
+        c: f64,
+    }
+
+    #[derive(Versionize, Clone)]
+    struct SS2 {
+        a: u32,
+        b: String,
+
+        c: f64,
+
+        // Lower version of SS won't deserialize the `d` added from version 2.
+        // With version 1 VersionMap, higher version of program is using the default value.
+        // `start` is the type version of `SS2`. It must be lower then VersionMap latest root version.
+        #[version(start = 2, default_fn = "default_ss2_state_d")]
+        d: u64,
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_higher_version_struct() {
+        let vm1 = VersionMap::new();
+        let states_storage = Arc::new(MemoryStatesStorage::new(1024 * 1024 * 8));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss1 = SS1 {
+            a: 678,
+            b: "abcde".to_string(),
+            c: 1.89,
+        };
+
+        let ss1_state_id = "ss";
+
+        upgrade_manager1.save_state(ss1_state_id, &ss1).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let vm2 = VersionMap::new();
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss1_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        let ss2: SS2 = Snapshot::load(&mut cursor, l, vm2).unwrap();
+
+        assert_eq!(ss2.a, 678);
+        assert_eq!(ss2.d, 0x1234);
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_struct_version_equal_version_map() {
+        let vm1 = VersionMap::new();
+        let states_storage = Arc::new(MemoryStatesStorage::new(4096));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss1 = SS1 {
+            a: 678,
+            b: "abcde".to_string(),
+            c: 1.89,
+        };
+
+        let ss1_state_id = "ss";
+
+        upgrade_manager1.save_state(ss1_state_id, &ss1).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let mut vm2 = VersionMap::new();
+        vm2.new_version();
+
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss1_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        let ss2: SS2 = Snapshot::load(&mut cursor, l, vm2).unwrap();
+
+        assert_eq!(ss2.a, 678);
+        assert_eq!(ss2.d, 0x1234);
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_struct_version_gt_version_map() {
+        let mut vm1 = VersionMap::new();
+        // Version starts from 1, so a call to `new_version` increase it to 2.
+        vm1.new_version();
+        let states_storage = Arc::new(MemoryStatesStorage::new(1024 * 1024 * 8));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss2 = SS2 {
+            a: 678,
+            b: "abcde".to_string(),
+            c: 1.89,
+            d: 0x2323,
+        };
+
+        let ss2_state_id = "ss";
+
+        upgrade_manager1.save_state(ss2_state_id, &ss2).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let vm2 = VersionMap::new();
+
+        let m = UpgradeManager::new(vm2, states_storage);
+
+        // `Err` value: Snapshot(InvalidDataVersion(2))
+        // Lower VersionMap can't decode struct serialized by higher version of VersionMap
+        // TODO: Take this into consideration of downgrade rollback.
+        match m.fetch_states_and_restore() {
+            Ok(_) => panic!(),
+            Err(UpgradeManagerError::Snapshot(SnapshotError::InvalidDataVersion(2))) => (),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_struct_no_version_hint() {
+        let vm1 = VersionMap::new();
+        let states_storage = Arc::new(MemoryStatesStorage::new(4096));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss1 = SS1 {
+            a: 678,
+            b: "abcde".to_string(),
+            c: 1.89,
+        };
+
+        let ss1_state_id = "ss";
+
+        upgrade_manager1.save_state(ss1_state_id, &ss1).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let vm2 = VersionMap::new();
+
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss1_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        match Snapshot::load::<_, SS1NoVersionHint>(&mut cursor, l, vm2) {
+            Err(SnapshotError::Versionize(_)) => (),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_root_version_type_version() {
+        let mut vm1 = VersionMap::new();
+        vm1.new_version();
+        vm1.set_type_version(TypeId::of::<SS2>(), 2);
+        let states_storage = Arc::new(MemoryStatesStorage::new(4096));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss2 = SS2 {
+            a: 678,
+            b: "abcde".to_string(),
+            c: 1.89,
+            // Field that starts from root version 2 won't be serialized.
+            d: 0xabcd,
+        };
+
+        let ss2_state_id = "ss";
+
+        upgrade_manager1.save_state(ss2_state_id, &ss2).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let mut vm2 = VersionMap::new();
+        // Version 2 Version map finds `SS2` version 2, will try to deserialize it
+        // and find out that not enough data is serialized and persisted.
+        vm2.new_version().set_type_version(TypeId::of::<SS2>(), 2);
+
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss2_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        let ss2: SS2 = Snapshot::load(&mut cursor, l, vm2).unwrap();
+
+        assert_eq!(ss2.a, 678);
+        // So version 2 version map uses the default value of `d`
+        assert_eq!(ss2.d, 0xabcd);
+    }
+
+    #[derive(Versionize, Clone)]
+    struct NestedSS2 {
+        a: i32,
+        ss2: SS2,
+    }
+
+    #[test]
+    fn test_upgrade_compatibility_nested() {
+        let mut vm1 = VersionMap::new();
+        vm1.new_version();
+        vm1.set_type_version(TypeId::of::<SS2>(), 2);
+        let states_storage = Arc::new(MemoryStatesStorage::new(4096));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let ss_nested = NestedSS2 {
+            a: 789,
+            ss2: SS2 {
+                a: 678,
+                b: "abcde".to_string(),
+                c: 1.89,
+                // Field that starts from root version 2 won't be serialized.
+                d: 0xabcd,
+            },
+        };
+
+        let ss_nested_state_id = "ss";
+
+        upgrade_manager1
+            .save_state(ss_nested_state_id, &ss_nested)
+            .unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let mut vm2 = VersionMap::new();
+        vm2.new_version().set_type_version(TypeId::of::<SS2>(), 2);
+
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss_nested_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        let ss2: NestedSS2 = Snapshot::load(&mut cursor, l, vm2).unwrap();
+
+        assert_eq!(ss2.a, 789);
+        // So version 2 version map uses the default value of `d`
+        assert_eq!(ss2.ss2.d, 0xabcd);
+    }
+}
