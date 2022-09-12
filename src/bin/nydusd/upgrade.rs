@@ -93,6 +93,9 @@ impl UpgradeManager {
 
         let vm = VersionMap::new();
 
+        // Important. We must ensure that VersionMap root version is increased when nydusd or fuse-backend
+        // changes its struct definition. And we have to public those structs from fuse-backend.
+
         info!("version map info: {:?}", vm);
 
         let inner = BytedUpgradeManager::new(vm, Arc::new(s));
