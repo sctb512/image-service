@@ -133,10 +133,7 @@ impl UpgradeManager {
     pub fn save_state<O: Versionize>(&mut self, id: &str, state: &O) -> UpgradeManagerResult<()> {
         let vm = self.vm.clone();
         let latest_version = vm.latest_version();
-        // FIXME: buf is not large enough to store the state.
-        let buf = vec![0u8; STATE_MAX_BUF_LEN];
-        let mut cursor = Cursor::new(buf);
-
+        let mut cursor = Cursor::new(Vec::new());
         let mut snapshot = Snapshot::new(vm, latest_version);
         snapshot
             .save(&mut cursor, state)
