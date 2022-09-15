@@ -197,9 +197,13 @@ fn validate_prefetch_file_list(input: &Option<Vec<String>>) -> DaemonResult<Opti
 fn fs_backend_factory(cmd: &FsBackendMountCmd) -> DaemonResult<BackFileSystem> {
     let prefetch_files = validate_prefetch_file_list(&cmd.prefetch_files)?;
 
+    println!("cmd.fs_type: {}", cmd.fs_type);
+
     match cmd.fs_type {
         FsBackendType::Rafs => {
             let rafs_config = RafsConfig::from_str(cmd.config.as_str())?;
+            println!("cmd.config.as_str(): {}", cmd.config.as_str());
+            println!("rafs_config: {}", rafs_config);
             let mut bootstrap = <dyn RafsIoRead>::from_file(&cmd.source)?;
             let mut rafs = Rafs::new(rafs_config, &cmd.mountpoint, &mut bootstrap)?;
             rafs.import(bootstrap, prefetch_files)?;

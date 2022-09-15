@@ -51,8 +51,14 @@ impl From<RegistryError> for BackendError {
 
 type RegistryResult<T> = std::result::Result<T, RegistryError>;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Cache(RwLock<String>);
+
+impl Clone for Cache {
+    fn clone(&self) -> Self {
+        Cache::new((self.0.read().unwrap()).to_string())
+    }
+}
 
 impl Cache {
     fn new(val: String) -> Self {
@@ -75,8 +81,14 @@ impl Cache {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct HashCache(RwLock<HashMap<String, String>>);
+
+impl Clone for HashCache {
+    fn clone(&self) -> Self {
+        HashCache(RwLock::new(self.0.read().unwrap().clone()))
+    }
+}
 
 impl HashCache {
     fn new() -> Self {
@@ -124,6 +136,7 @@ enum Auth {
     Bearer(BearerAuth),
 }
 
+#[derive(Debug, Clone)]
 struct RegistryState {
     // HTTP scheme like: https, http
     scheme: String,
@@ -151,6 +164,15 @@ struct RegistryState {
     cached_redirect: HashCache,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct MirrorConfigState {
+    // HTTP scheme like: https, http
+    scheme: String,
+    host: String,
+    registry_header: String,
+}
+
 impl RegistryState {
     fn url(&self, path: &str, query: &[&str]) -> std::result::Result<String, ParseError> {
         let path = if query.is_empty() {
@@ -158,6 +180,7 @@ impl RegistryState {
         } else {
             format!("/v2/{}{}?{}", self.repo, path, query.join("&"))
         };
+        // if self.mirrors.empty();
         let url = format!("{}://{}", self.scheme, self.host.as_str());
         let url = Url::parse(url.as_str())?;
         let url = url.join(path.as_str())?;
@@ -278,11 +301,32 @@ impl RegistryState {
     }
 }
 
+#[allow(dead_code)]
 struct RegistryReader {
     blob_id: String,
     connection: Arc<Connection>,
-    state: Arc<RegistryState>,
+    registry_state: Arc<RegistryState>,
+    state: Arc<RwLock<RwRegistryState>>,
+    mirrors: Arc<Vec<RwMirror>>,
     metrics: Arc<BackendMetrics>,
+}
+
+struct RwMirror (Arc<RwLock<Mirror>>);
+impl RwMirror {
+    fn new(mirror: Mirror) -> Self {
+        RwMirror(Arc::new(RwLock::new(mirror)))
+    }
+}
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct Mirror {
+    state: RegistryState,
+    config: MirrorConfigState,
+    available: bool,
+}
+struct RwRegistryState {
+    current_state: RegistryState,
+    mirror: RwMirror,
 }
 
 impl RegistryReader {
@@ -320,9 +364,23 @@ impl RegistryReader {
         mut headers: HeaderMap,
         catch_status: bool,
     ) -> RegistryResult<Response> {
+        println!("[ abin ] request url: {}", url);
+
         // Try get authorization header from cache for this request
         let mut last_cached_auth = String::new();
-        let cached_auth = self.state.cached_auth.get();
+        // let cached_auth = if !self.mirrors.is_empty() {
+        //     let mut mirror_cached_auth = String::new();
+        //     for mirror in self.mirrors.into_iter() {
+        //         if mirror.available {
+        //             mirror_cached_auth = mirror.state.cached_auth.get();
+        //             break;
+        //         }
+        //     }
+        //     mirror_cached_auth
+        // }else{
+        //     state.cached_auth.get()
+        // };
+        let cached_auth = self.state.read().unwrap().current_state.cached_auth.get();
         if !cached_auth.is_empty() {
             last_cached_auth = cached_auth.clone();
             headers.insert(
@@ -348,10 +406,15 @@ impl RegistryReader {
         if resp.status() == StatusCode::UNAUTHORIZED {
             if let Some(resp_auth_header) = resp.headers().get(HEADER_WWW_AUTHENTICATE) {
                 // Get token from registry authorization server
-                if let Some(auth) = RegistryState::parse_auth(resp_auth_header, &self.state.auth) {
+                if let Some(auth) = RegistryState::parse_auth(
+                    resp_auth_header,
+                    &self.state.clone().read().unwrap().current_state.auth,
+                ) {
                     let auth_header = self
                         .state
-                        .get_auth_header(auth, &self.connection)
+                        .read()
+                        .unwrap()
+                        .current_state.get_auth_header(auth, &self.connection)
                         .map_err(|e| RegistryError::Common(e.to_string()))?;
                     headers.insert(
                         HEADER_AUTHORIZATION,
@@ -367,7 +430,11 @@ impl RegistryReader {
                     let status = resp.status();
                     if is_success_status(status) {
                         // Cache authorization header for next request
-                        self.state.cached_auth.set(&last_cached_auth, auth_header)
+                        self.state
+                            .read()
+                            .unwrap()
+                            .current_state.cached_auth
+                            .set(&last_cached_auth, auth_header)
                     }
                     return respond(resp, catch_status).map_err(RegistryError::Request);
                 }
@@ -395,19 +462,33 @@ impl RegistryReader {
         allow_retry: bool,
     ) -> RegistryResult<usize> {
         let url = format!("/blobs/sha256:{}", self.blob_id);
+        println!("[ abin ] url1: {}", url);
         let url = self
             .state
-            .url(url.as_str(), &[])
+            .read()
+            .unwrap()
+            .current_state.url(url.as_str(), &[])
             .map_err(RegistryError::Url)?;
+        println!("[ abin ] url2: {}", url);
         let mut headers = HeaderMap::new();
         let end_at = offset + buf.len() as u64 - 1;
         let range = format!("bytes={}-{}", offset, end_at);
         headers.insert("Range", range.parse().unwrap());
 
+        if let Some(mirror) = &self.state.read().unwrap().mirror {
+            headers.insert("X-Dragonfly-Registry", mirror.config.registry_header.parse().unwrap());
+        }
+
         let mut resp;
-        let cached_redirect = self.state.cached_redirect.get(&self.blob_id);
+        let cached_redirect = self
+            .state
+            .read()
+            .unwrap()
+            .current_state.cached_redirect
+            .get(&self.blob_id);
 
         if let Some(cached_redirect) = cached_redirect {
+            // 缓存到另一个url
             resp = self
                 .connection
                 .call::<&[u8]>(
@@ -428,7 +509,11 @@ impl RegistryReader {
                     "The redirected link has expired: {}, will retry read",
                     cached_redirect.as_str()
                 );
-                self.state.cached_redirect.remove(&self.blob_id);
+                self.state
+                    .read()
+                    .unwrap()
+                    .current_state.cached_redirect
+                    .remove(&self.blob_id);
                 // Try read again only once
                 return self._try_read(buf, offset, false);
             }
@@ -444,20 +529,24 @@ impl RegistryReader {
                     let mut location = Url::parse(location).map_err(RegistryError::Url)?;
                     // Note: Some P2P proxy server supports only scheme specified origin blob server,
                     // so we need change scheme to `blob_url_scheme` here
-                    if !self.state.blob_url_scheme.is_empty() {
+                    if !self.state.read().unwrap().current_state.blob_url_scheme.is_empty() {
                         location
-                            .set_scheme(&self.state.blob_url_scheme)
+                            .set_scheme(&self.state.read().unwrap().current_state.blob_url_scheme)
                             .map_err(|_| {
-                                RegistryError::Scheme(self.state.blob_url_scheme.clone())
+                                RegistryError::Scheme(
+                                    self.state.read().unwrap().current_state.blob_url_scheme.clone(),
+                                )
                             })?;
                     }
-                    if !self.state.blob_redirected_host.is_empty() {
+                    if !self.state.read().unwrap().current_state.blob_redirected_host.is_empty() {
                         location
-                            .set_host(Some(self.state.blob_redirected_host.as_str()))
+                            .set_host(Some(
+                                self.state.read().unwrap().current_state.blob_redirected_host.as_str(),
+                            ))
                             .map_err(|e| {
                                 error!(
                                     "Failed to set blob redirected host to {}: {:?}",
-                                    self.state.blob_redirected_host.as_str(),
+                                    self.state.read().unwrap().current_state.blob_redirected_host.as_str(),
                                     e
                                 );
                                 RegistryError::Url(e)
@@ -479,7 +568,9 @@ impl RegistryReader {
                         Ok(_resp) => {
                             resp = _resp;
                             self.state
-                                .cached_redirect
+                                .read()
+                                .unwrap()
+                                .current_state.cached_redirect
                                 .set(self.blob_id.clone(), location.as_str().to_string())
                         }
                         Err(err) => {
@@ -502,7 +593,9 @@ impl BlobReader for RegistryReader {
     fn blob_size(&self) -> BackendResult<u64> {
         let url = self
             .state
-            .url(&format!("/blobs/sha256:{}", self.blob_id), &[])
+            .read()
+            .unwrap()
+            .current_state.url(&format!("/blobs/sha256:{}", self.blob_id), &[])
             .map_err(RegistryError::Url)?;
         let resp =
             self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new(), true)?;
@@ -519,8 +612,56 @@ impl BlobReader for RegistryReader {
     }
 
     fn try_read(&self, buf: &mut [u8], offset: u64) -> BackendResult<usize> {
+        // self._try_read(buf, offset, true)
+        //     .map_err(BackendError::Registry)
         self._try_read(buf, offset, true)
+            .map_err(|_| {
+                let mut state = self.state.write().unwrap();
+                // if let Some(current_mirror) = &state.mirror.ow {
+                //     (*current_mirror).available = false;
+                    // (*current_mirror).available = false;
+                    // for mirror in self.mirrors.iter() {
+
+                    // }
+                // }
+            //     self.state.write().unwrap().available = false;
+            //     for mirror in self.mirrors.iter() {
+            //         if mirror.state.read().unwrap().available {
+            //             let mut self_state = self.state.write().unwrap();
+            //             let mirror_tate = mirror.state.read().unwrap();
+            //             (*self_state).auth = mirror_tate.auth.clone();
+            //             (*self_state).available = mirror_tate.available;
+            //             (*self_state).host = mirror_tate.host.clone();
+            //             (*self_state).repo = mirror_tate.repo.clone();
+            //             (*self_state).scheme = mirror_tate.scheme.clone();
+            //             (*self_state).username = mirror_tate.username.clone();
+            //             (*self_state).password = mirror_tate.password.clone();
+            //             (*self_state).retry_limit = mirror_tate.retry_limit;
+            //             (*self_state).blob_url_scheme = mirror_tate.blob_url_scheme.clone();
+            //             (*self_state).blob_redirected_host =
+            //                 mirror_tate.blob_redirected_host.clone();
+            //             // (*self_state).cached_auth = mirror_tate.cached_auth;
+            //             // (*self_state).cached_redirect = mirror_tate.cached_redirect;
+            //             (*self_state).cached_auth =
+            //                 if let Some(cached_auth) = Some(mirror_tate.cached_auth.get()) {
+            //                     Cache::new(format!("Bearer {}", cached_auth))
+            //                 } else {
+            //                     Cache::new(String::new())
+            //                 };
+            //             (*self_state).cached_redirect = if let Some(cached_redirect) =
+            //                 Some(mirror_tate.cached_redirect.0.read().unwrap().clone())
+            //             {
+            //                 HashCache::new_hashmap(cached_redirect)
+            //             } else {
+            //                 HashCache::new()
+            //             };
+            //             break;
+            //         }
+            //     }
+                unsafe{ self._try_read(buf, offset, false).unwrap_err_unchecked() }
+            })
             .map_err(BackendError::Registry)
+            
     }
 
     fn metrics(&self) -> &BackendMetrics {
@@ -528,14 +669,16 @@ impl BlobReader for RegistryReader {
     }
 
     fn retry_limit(&self) -> u8 {
-        self.state.retry_limit
+        self.state.read().unwrap().current_state.retry_limit
     }
 }
 
 /// Storage backend based on image registry.
 pub struct Registry {
     connection: Arc<Connection>,
-    state: Arc<RegistryState>,
+    registry_state: Arc<RegistryState>,
+    state: Arc<RwLock<RwRegistryState>>,
+    mirrors: Arc<Vec<RwMirror>>,
     metrics: Arc<BackendMetrics>,
 }
 
@@ -543,13 +686,24 @@ impl Registry {
     #[allow(clippy::useless_let_if_seq)]
     pub fn new(config: serde_json::value::Value, id: Option<&str>) -> Result<Registry> {
         let id = id.ok_or_else(|| einval!("Registry backend requires blob_id"))?;
+        println!("[ abin ] config: {}", config);
         let config: RegistryConfig = serde_json::from_value(config).map_err(|e| einval!(e))?;
+        println!("[ abin ] RegistryConfig config: {:?}", config);
+
         let con_config: ConnectionConfig = config.clone().into();
         let retry_limit = con_config.retry_limit;
         let connection = Connection::new(&con_config)?;
         let auth = trim(config.auth);
         let registry_token = trim(config.registry_token);
         let (username, password) = Self::get_authorization_info(&auth)?;
+        // let cached_auth = if let Some(registry_token) = registry_token {
+        //     // Store the registry bearer token to cached_auth, prefer to
+        //     // use the token stored in cached_auth to request registry.
+        //     Cache::new(format!("Bearer {}", registry_token))
+        // } else {
+        //     Cache::new(String::new())
+        // };
+
         let cached_auth = if let Some(registry_token) = registry_token {
             // Store the registry bearer token to cached_auth, prefer to
             // use the token stored in cached_auth to request registry.
@@ -558,7 +712,7 @@ impl Registry {
             Cache::new(String::new())
         };
 
-        let state = Arc::new(RegistryState {
+        let registry_state = Arc::new(RegistryState {
             scheme: config.scheme,
             host: config.host,
             repo: config.repo,
@@ -572,9 +726,40 @@ impl Registry {
             cached_redirect: HashCache::new(),
         });
 
+        let mut mirrors = Vec::<RwMirror>::new();
+        for mirror_config in config.mirrors.iter() {
+            let mirror_config = MirrorConfigState {
+                scheme: mirror_config.scheme.clone(),
+                host: mirror_config.host.clone(),
+                registry_header: mirror_config.header.dragonfly_registry.clone(),
+            };
+            let mirror_state = (*registry_state).clone();
+
+            println!("mirror_state: {:?}", mirror_state);
+
+            mirrors.push(RwMirror::new(Mirror{
+                state: mirror_state,
+                config: mirror_config,
+                available: true,
+            }));
+        }
+
+        let (real_state, mirror) = if !mirrors.is_empty() {
+            (mirrors[0].0.read().unwrap().state.clone(), Some(mirrors[0].0.read().unwrap().to_owned()))
+        }else {
+            ((*registry_state).clone(), None)
+        };
+
+        let state = Arc::new(RwLock::new(RwRegistryState{
+            current_state: real_state,
+            mirror: mirror,
+        }));
+
         Ok(Registry {
             connection,
+            registry_state,
             state,
+            mirrors: Arc::new(mirrors),
             metrics: BackendMetrics::new(id, "registry"),
         })
     }
@@ -618,8 +803,10 @@ impl BlobBackend for Registry {
         Ok(Arc::new(RegistryReader {
             blob_id: blob_id.to_owned(),
             state: self.state.clone(),
+            mirrors: self.mirrors.clone(),
             connection: self.connection.clone(),
             metrics: self.metrics.clone(),
+            registry_state: self.registry_state.clone(),
         }))
     }
 }

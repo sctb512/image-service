@@ -584,6 +584,8 @@ fn process_default_fs_service(
             prefetch_files: None,
         };
 
+        println!("[ abin ] shared_dir: {}", shared_dir);
+
         // passthroughfs requires !no_open
         opts.no_open = false;
         opts.killpriv_v2 = true;
@@ -593,6 +595,7 @@ fn process_default_fs_service(
         let config = args.value_of("config").ok_or_else(|| {
             DaemonError::InvalidArguments("config file is not provided".to_string())
         })?;
+        println!("[ abin ] bootstrap");
 
         let prefetch_files: Option<Vec<String>> = args
             .values_of("prefetch-files")
@@ -611,6 +614,12 @@ fn process_default_fs_service(
 
         Some(cmd)
     } else {
+        println!("[ abin ] None");
+        // let config = args.value_of("config").ok_or_else(|| {
+        //     DaemonError::InvalidArguments("config file is not provided".to_string())
+        // })?;
+        // let config = std::fs::read_to_string(config)?;
+        // println!("[ abin ] config: {}", config);
         None
     };
 
@@ -720,6 +729,7 @@ fn main() -> Result<()> {
     let (bti_string, bti) = BuildTimeInfo::dump(crate_version!());
     let cmd_options = prepare_commandline_options().version(bti_string.as_str());
     let args = cmd_options.clone().get_matches();
+    println!("args: {:?}", args);
     let logging_file = args.value_of("log-file").map(|l| l.into());
     // Safe to unwrap because it has default value and possible values are defined
     let level = args.value_of("log-level").unwrap().parse().unwrap();
@@ -745,6 +755,7 @@ fn main() -> Result<()> {
         Some("fuse") => {
             // Safe to unwrap because the subcommand is `fuse`.
             let subargs = args.subcommand_matches("fuse").unwrap();
+            println!("subargs: {:?}", subargs);
             let subargs = SubCmdArgs::new(&args, subargs);
             process_default_fs_service(subargs, bti, apisock, true)?;
         }

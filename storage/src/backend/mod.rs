@@ -13,7 +13,7 @@
 //!   The [LocalFs](localfs/struct.LocalFs.html) storage backend supports backend level data
 //!   prefetching, which is to load data into page cache.
 
-use std::sync::Arc;
+use std::sync::{Arc};
 
 use fuse_backend_rs::file_buf::FileVolatileSlice;
 use nydus_utils::metrics::{BackendMetrics, ERROR_HOLDER};

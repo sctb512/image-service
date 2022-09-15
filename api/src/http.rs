@@ -167,7 +167,7 @@ pub struct OssConfig {
 }
 
 /// Container registry configuration information to access blobs.
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize, Debug)]
 #[serde(default)]
 pub struct RegistryConfig {
     /// Enable HTTP proxy for the read request.
@@ -187,6 +187,8 @@ pub struct RegistryConfig {
     pub scheme: String,
     /// Registry url host
     pub host: String,
+    /// Mirror information
+    pub mirrors: Vec<MirrorConfig>,
     /// Registry image name, like 'library/ubuntu'
     pub repo: String,
     /// Base64_encoded(username:password), the field should be
@@ -420,6 +422,31 @@ impl Default for ProxyConfig {
             check_interval: 5,
         }
     }
+}
+
+/// Configuration information for mirror.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct MirrorConfig {
+    /// Dragonfaly http scheme, either 'http' or 'https'.
+    pub scheme: String,
+    /// Dragonfaly url host.
+    pub host: String,
+    /// Username for Dragonfaly server.
+    pub username: String,
+    /// Password for Dragonfaly server.
+    pub password: String,
+    /// Request header for Dragonfaly server. Currently, only "X-Dragonfly-Registry" needed.
+    pub header: DragonfalyHeader,
+}
+
+/// Configuration information for Dragonfaly header.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DragonfalyHeader {
+    /// Pull data from "X-Dragonfly-Registry" URL if not cached in Dragonfly.
+    #[serde(rename = "X-Dragonfly-Registry")]
+    pub dragonfly_registry: String,
 }
 
 #[derive(Debug)]

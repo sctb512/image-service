@@ -1,0 +1,34 @@
+{
+  "device": {
+    "backend": {
+      "type": "registry",
+      "config": {
+        "host": "127.0.0.1:5000",
+        "proxy": {
+          "url": "http://127.0.0.1:65001",
+          "fallback": true,
+          "ping_url": "http://127.0.0.1:40901/server/ping",
+          "check_interval": 5
+        },
+        "scheme": "http",
+        "timeout": 5,
+        "connect_timeout": 5,
+        "retry_limit": 2
+      }
+    },
+    "cache": {
+      "type": "blobcache",
+      "config": {
+        "work_dir": "cache"
+      }
+    }
+  },
+  "mode": "direct",
+  "digest_validate": false,
+  "iostats_files": false,
+  "enable_xattr": true,
+  "fs_prefetch": {
+    "enable": true,
+    "threads_count": 4
+  }
+}

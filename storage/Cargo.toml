@@ -13,7 +13,8 @@ anyhow = "1.0.35"
 arc-swap = "1.5"
 base64 = { version = "0.13.0", optional = true }
 bitflags = "1.2.1"
-dbs-uhttp = { version = "0.3.0" }
+# dbs-uhttp = { version = "0.3.0" }
+dbs-uhttp = { path = "../../dbs-uhttp" }
 futures = "0.3"
 # pin governor to avoid multi versions of hashbrown
 governor = "=0.4.1"

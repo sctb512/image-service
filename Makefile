@@ -60,7 +60,8 @@ endef
 	$(eval CARGO_BUILD_FLAGS += --target ${ARCH}-unknown-${OS}-musl)
 
 # Targets that are exposed to developers and users.
-build: .format fusedev virtiofs
+# build: .format fusedev virtiofs
+build: fusedev
 release: fusedev-release virtiofs-release
 fusedev-release: .format .release_version fusedev
 virtiofs-release: .format .release_version virtiofs
@@ -83,10 +84,10 @@ clean:
 	${CARGO} clean --target-dir ${current_dir}/target-virtiofs
 	${CARGO} clean --target-dir ${current_dir}/target-fusedev
 
-install: fusedev-release
-	@sudo install -D -m 755 target-fusedev/release/nydusd /usr/local/bin/nydusd
-	@sudo install -D -m 755 target-fusedev/release/nydus-image /usr/local/bin/nydus-image
-	@sudo install -D -m 755 target-fusedev/release/nydusctl /usr/local/bin/nydusctl
+install: fusedev
+	@sudo install -D -m 755 target-fusedev/debug/nydusd /usr/local/bin/nydusd
+	@sudo install -D -m 755 target-fusedev/debug/nydus-image /usr/local/bin/nydus-image
+	@sudo install -D -m 755 target-fusedev/debug/nydusctl /usr/local/bin/nydusctl
 
 # If virtiofs test must be performed, only run binary part
 # Use same traget to avoid re-compile for differnt targets like gnu and musl

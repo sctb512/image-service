@@ -325,6 +325,9 @@ impl DaemonStateMachineContext {
                         continue;
                     };
 
+                    println!("[ abin ] event: {:?}", event.clone());
+                    println!("[ abin ] action: {:?}", action.clone());
+
                     let d = self.daemon.as_ref();
                     let cur = self.sm.state();
                     info!(

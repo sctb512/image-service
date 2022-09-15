@@ -227,6 +227,7 @@ pub fn create_daemon(subargs: &SubCmdArgs, bti: BuildTimeInfo) -> Result<Arc<dyn
             Some(config)
         }
     };
+    println!("[ abin ] create_daemon config: {:?}", config);
 
     let (to_sm, from_client) = channel::<DaemonStateMachineInput>();
     let (to_client, from_sm) = channel::<DaemonResult<()>>();

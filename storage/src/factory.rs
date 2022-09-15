@@ -201,10 +201,13 @@ impl BlobFactory {
                 Some(blob_id),
             )?)),
             #[cfg(feature = "backend-registry")]
-            "registry" => Ok(Arc::new(registry::Registry::new(
-                config.backend_config,
-                Some(blob_id),
-            )?)),
+            "registry" => {
+                info!("[ abin ] ok, {}", config.backend_config.clone());
+                Ok(Arc::new(registry::Registry::new(
+                    config.backend_config,
+                    Some(blob_id),
+                )?))
+            }
             #[cfg(feature = "backend-localfs")]
             "localfs" => Ok(Arc::new(localfs::LocalFs::new(
                 config.backend_config,

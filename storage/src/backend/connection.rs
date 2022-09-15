@@ -9,8 +9,8 @@ use std::io::{Read, Result};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{thread};
 
 use log::{max_level, Level};
 
@@ -22,7 +22,7 @@ use reqwest::{
     Method, StatusCode, Url,
 };
 
-use nydus_api::http::{OssConfig, ProxyConfig, RegistryConfig};
+use nydus_api::http::{MirrorConfig, OssConfig, ProxyConfig, RegistryConfig};
 
 const HEADER_AUTHORIZATION: &str = "Authorization";
 
@@ -48,6 +48,7 @@ type ConnectionResult<T> = std::result::Result<T, ConnectionError>;
 #[derive(Debug, Clone)]
 pub(crate) struct ConnectionConfig {
     pub proxy: ProxyConfig,
+    pub mirrors: Vec<MirrorConfig>,
     pub skip_verify: bool,
     pub timeout: u32,
     pub connect_timeout: u32,
@@ -58,6 +59,7 @@ impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
             proxy: ProxyConfig::default(),
+            mirrors: Vec::<MirrorConfig>::new(),
             skip_verify: false,
             timeout: 5,
             connect_timeout: 5,
@@ -70,6 +72,7 @@ impl From<OssConfig> for ConnectionConfig {
     fn from(c: OssConfig) -> ConnectionConfig {
         ConnectionConfig {
             proxy: c.proxy,
+            mirrors: Vec::<MirrorConfig>::new(),
             skip_verify: c.skip_verify,
             timeout: c.timeout,
             connect_timeout: c.connect_timeout,
@@ -82,6 +85,7 @@ impl From<RegistryConfig> for ConnectionConfig {
     fn from(c: RegistryConfig) -> ConnectionConfig {
         ConnectionConfig {
             proxy: c.proxy,
+            mirrors: c.mirrors,
             skip_verify: c.skip_verify,
             timeout: c.timeout,
             connect_timeout: c.connect_timeout,
@@ -180,6 +184,7 @@ pub(crate) fn respond(resp: Response, catch_status: bool) -> ConnectionResult<Re
 #[derive(Debug)]
 pub(crate) struct Connection {
     client: Client,
+    // mirrors: Vec<Mirror>,
     proxy: Option<Proxy>,
     shutdown: AtomicBool,
 }
@@ -189,6 +194,12 @@ impl Connection {
     pub fn new(config: &ConnectionConfig) -> Result<Arc<Connection>> {
         info!("backend config: {:?}", config);
         let client = Self::build_connection("", config)?;
+
+        if !config.proxy.url.is_empty() && !config.mirrors.is_empty() {
+            error!("connection: proxy and mirrors cannot be configured at the same time.");
+            panic!("connection: proxy and mirrors cannot be configured at the same time.");
+        };
+
         let proxy = if !config.proxy.url.is_empty() {
             let ping_url = if !config.proxy.ping_url.is_empty() {
                 Some(Url::from_str(&config.proxy.ping_url).map_err(|e| einval!(e))?)
@@ -280,6 +291,8 @@ impl Connection {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(ConnectionError::Disconnected);
         }
+
+        println!("[ abin ] url: {}", url);
 
         if let Some(proxy) = &self.proxy {
             if proxy.health.ok() {

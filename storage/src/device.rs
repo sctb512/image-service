@@ -886,6 +886,7 @@ impl BlobDevice {
         config: &Arc<FactoryConfig>,
         blob_infos: &[Arc<BlobInfo>],
     ) -> io::Result<BlobDevice> {
+        println!("BlobDevice new");
         let mut blobs = Vec::with_capacity(blob_infos.len());
         for blob_info in blob_infos.iter() {
             let blob = BLOB_FACTORY.new_blob_cache(config, blob_info, blob_infos.len())?;
@@ -908,6 +909,7 @@ impl BlobDevice {
         blob_infos: &[Arc<BlobInfo>],
         fs_prefetch: bool,
     ) -> io::Result<()> {
+        println!("BlobDevice update");
         if self.blobs.load().len() != blob_infos.len() {
             return Err(einval!("number of blobs doesn't match"));
         }

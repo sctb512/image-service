@@ -230,6 +230,7 @@ impl Rafs {
         sb.load(r).map_err(RafsError::FillSuperblock)?;
 
         let blob_infos = sb.superblock.get_blob_infos();
+        println!("[ abin ] storage_conf: {:?}", storage_conf);
         let device =
             BlobDevice::new(&storage_conf, &blob_infos).map_err(RafsError::CreateDevice)?;
 

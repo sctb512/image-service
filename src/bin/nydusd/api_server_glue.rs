@@ -243,6 +243,7 @@ impl ApiServer {
     }
 
     fn do_mount(&self, mountpoint: String, cmd: ApiMountCmd) -> ApiResponse {
+        info!("do_mount: before exit...");
         let fs_type = FsBackendType::from_str(&cmd.fs_type)
             .map_err(|e| ApiError::MountFilesystem(DaemonError::from(e).into()))?;
         let fs = self.get_default_fs_service()?;
@@ -258,6 +259,7 @@ impl ApiServer {
     }
 
     fn do_remount(&self, mountpoint: String, cmd: ApiMountCmd) -> ApiResponse {
+        info!("do_remount: before exit...");
         let fs_type = FsBackendType::from_str(&cmd.fs_type)
             .map_err(|e| ApiError::MountFilesystem(DaemonError::from(e).into()))?;
         self.get_default_fs_service()?
@@ -442,6 +444,9 @@ impl ApiServerController {
                     e
                 );
             }
+        }
+        if let Some(apisock) = self.sock.as_ref() {
+            std::fs::remove_file(apisock).unwrap_or_default();
         }
     }
 }

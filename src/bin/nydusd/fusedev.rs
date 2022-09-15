@@ -561,6 +561,7 @@ pub fn create_fuse_daemon(
         daemon
             .on_event(DaemonStateMachineInput::Mount)
             .map_err(|e| eother!(e))?;
+        println!("[ abin ] test!");
         daemon
             .on_event(DaemonStateMachineInput::Start)
             .map_err(|e| eother!(e))?;

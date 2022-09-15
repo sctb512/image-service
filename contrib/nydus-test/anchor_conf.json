@@ -1,0 +1,25 @@
+{
+    "workspace": "/home/tangbin.bin/test_code/image-service/workspace",
+    "nydus_project": "/home/tangbin.bin/test_code/image-service",
+    "nydus_runtime_conf": {
+        "profile": "debug",
+        "log_level": "info"
+    },
+    "registry": {
+        "registry_url": "127.0.0.1:5000",
+        "registry_namespace": "nydus",
+        "registry_auth": "",
+        "backend_proxy_url": "127.0.0.1:8000",
+        "backend_proxy_blobs_dir": "/home/tangbin.bin/test_code/image-service/backend/simulator/stores/blobs"
+    },
+    "images": {
+        "images_array": [
+            "busybox:latest"
+        ]
+    },
+    "logging_file": "stderr",
+    "target": "gnu",
+    "artifacts": {
+        "containerd": "/usr/bin/containerd"
+    }
+}

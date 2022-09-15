@@ -9,7 +9,7 @@ repository = "https://github.com/dragonflyoss/image-service"
 edition = "2018"
 
 [dependencies]
-dbs-uhttp = { version = "0.3.0" }
+dbs-uhttp = { path = "../../dbs-uhttp" }
 http = "0.2.1"
 lazy_static = "1.4.0"
 libc = "0.2"

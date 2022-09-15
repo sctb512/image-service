@@ -551,6 +551,7 @@ impl FsCacheHandler {
         file: Arc<File>,
         blobs_need: usize,
     ) -> Result<Arc<dyn BlobCache>> {
+        println!("create_data_blob_object");
         let mut blob_info = config.blob_info().deref().clone();
         blob_info.set_fscache_file(Some(file));
         let blob_ref = Arc::new(blob_info);
