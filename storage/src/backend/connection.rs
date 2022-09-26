@@ -205,15 +205,14 @@ pub(crate) struct MirrorState {
 
 #[derive(Debug)]
 pub(crate) struct Mirror {
-    client: Client,
     /// Information for mirror from configuration file.
     config: MirrorConfig,
     /// Mirror status, it will be set to false by atomic operation when mirror is not work.
     status: AtomicBool,
-    /// Falied times for mirror, the status will be marked as false when fail_times = fail_limit.
-    fail_times: AtomicU8,
+    /// Falied times for mirror, the status will be marked as false when failed_times = failed_limit.
+    failed_times: AtomicU8,
     /// Failed limit for mirror.
-    fail_limit: u8,
+    failed_limit: u8,
 }
 
 impl Connection {
@@ -241,13 +240,11 @@ impl Connection {
         for mirror_config in config.mirrors.iter() {
             if !mirror_config.host.is_empty() {
                 mirrors.push(Arc::new(Mirror {
-                    // TODO: build mirror connection from MirrorConfig, now is from registry config
-                    client: Self::build_connection("", config)?,
                     config: mirror_config.clone(),
                     status: AtomicBool::from(true),
                     // Maybe read from configuration file
-                    fail_limit: 5,
-                    fail_times: AtomicU8::from(0),
+                    failed_limit: 5,
+                    failed_times: AtomicU8::from(0),
                 }));
             }
         }
@@ -414,8 +411,10 @@ impl Connection {
                 );
             }
 
+            warn!("mirror call_inner headers: {:?}", headers);
+
             let result = self.call_inner(
-                &mirror.client,
+                &self.client,
                 method.clone(),
                 current_url.to_string().as_str(),
                 &query,
@@ -427,21 +426,22 @@ impl Connection {
 
             match result {
                 Ok(resp) => {
+                    warn!("mirror call_inner ok resp.status(): {:?}", resp.status());
                     if resp.status() < StatusCode::INTERNAL_SERVER_ERROR {
                         return Ok(resp);
                     }
                 }
                 Err(err) => {
                     warn!(
-                        "request mirror failed, mirror: {:?},  error: {:?}",
+                        "request mirror server failed, mirror: {:?},  error: {:?}",
                         mirror, err
                     );
-                    mirror.fail_times.fetch_add(1, Ordering::Relaxed);
+                    mirror.failed_times.fetch_add(1, Ordering::Relaxed);
 
-                    if mirror.fail_times.load(Ordering::Relaxed) >= mirror.fail_limit {
-                        error!(
+                    if mirror.failed_times.load(Ordering::Relaxed) >= mirror.failed_limit {
+                        warn!(
                             "reach to fail limit {}, disable mirror: {:?}",
-                            mirror.fail_limit, mirror
+                            mirror.failed_limit, mirror
                         );
                         mirror.status.store(false, Ordering::Relaxed);
 
@@ -452,6 +452,7 @@ impl Connection {
                             }
                             let m = &self.mirror_state.mirrors[idx];
                             if m.status.load(Ordering::Relaxed) {
+                                warn!("mirror server has been changed to {:?}", m);
                                 break Some(m);
                             }
 
@@ -462,6 +463,7 @@ impl Connection {
                     }
                 }
             }
+            warn!("Failed to request mirror server, fallback to original server.");
         }
 
         self.call_inner(
@@ -527,13 +529,18 @@ impl Connection {
         let has_data = data.is_some();
         let start = Instant::now();
 
+        warn!("request headers: {:?}", headers.clone());
+
         let mut rb = client.request(method.clone(), url).headers(headers.clone());
         if let Some(q) = query.as_ref() {
             rb = rb.query(q);
         }
 
+        warn!("request rb: {:?}", rb);
+
         let ret;
         if let Some(data) = data {
+            warn!("have data");
             match data {
                 ReqBody::Read(body, total) => {
                     let body = Body::sized(body, total as u64);
@@ -547,6 +554,7 @@ impl Connection {
                 }
             }
         } else {
+            warn!("no data");
             ret = rb.body("").send();
         }
 

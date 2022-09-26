@@ -331,6 +331,8 @@ impl RegistryReader {
             );
         }
 
+        warn!("url: {}, request headers: {:?}", url, headers);
+
         // For upload request with payload, the auth header should be cached
         // after create_upload(), so we can request registry server directly
         if let Some(data) = data {
@@ -345,6 +347,9 @@ impl RegistryReader {
             .connection
             .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
             .map_err(RegistryError::Request)?;
+
+        warn!("resp.status(): {}", resp.status());
+
         if resp.status() == StatusCode::UNAUTHORIZED {
             if let Some(resp_auth_header) = resp.headers().get(HEADER_WWW_AUTHENTICATE) {
                 // Get token from registry authorization server
@@ -357,6 +362,8 @@ impl RegistryReader {
                         HEADER_AUTHORIZATION,
                         HeaderValue::from_str(auth_header.as_str()).unwrap(),
                     );
+
+                    warn!("headers after AUTHENTICATE: {:?}", headers);
 
                     // Try to request registry server with `authorization` header again
                     let resp = self
