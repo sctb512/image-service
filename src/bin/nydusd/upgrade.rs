@@ -13,7 +13,6 @@ use fuse_backend_rs::api::{vfs::Vfs, VfsIndex};
 
 use nydus::FsBackendType;
 
-#[cfg(feature = "fusedev")]
 use upgrade::states_storage::SocketStatesStorage;
 pub use upgrade::{UpgradeManager as BytedUpgradeManager, UpgradeManagerError as UpgradeMgrError};
 
