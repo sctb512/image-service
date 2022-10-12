@@ -13,7 +13,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwapOption;
-use log::{max_level, Level};
 
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{
@@ -215,6 +214,24 @@ pub(crate) struct Mirror {
     failed_limit: u8,
 }
 
+impl Mirror {
+    fn mirror_url(&self, url: &str) -> ConnectionResult<Url> {
+        let mirror_host = Url::parse(self.config.host.as_ref()).map_err(ConnectionError::Url)?;
+        let mut current_url = Url::parse(url).map_err(ConnectionError::Url)?;
+
+        current_url
+            .set_scheme(mirror_host.scheme())
+            .map_err(|_| ConnectionError::Scheme)?;
+        current_url
+            .set_host(mirror_host.host_str())
+            .map_err(|_| ConnectionError::Host)?;
+        current_url
+            .set_port(mirror_host.port())
+            .map_err(|_| ConnectionError::Port)?;
+        Ok(current_url)
+    }
+}
+
 impl Connection {
     /// Create a new connection according to the configuration.
     pub fn new(config: &ConnectionConfig) -> Result<Arc<Connection>> {
@@ -239,6 +256,7 @@ impl Connection {
         let mut mirrors = Vec::new();
         for mirror_config in config.mirrors.iter() {
             if !mirror_config.host.is_empty() {
+                warn!("mirror_config: {:?}", mirror_config);
                 mirrors.push(Arc::new(Mirror {
                     config: mirror_config.clone(),
                     status: AtomicBool::from(true),
@@ -322,6 +340,7 @@ impl Connection {
     }
 
     /// Send a request to server and wait for response.
+    #[allow(clippy::too_many_arguments)]
     pub fn call<R: Read + Send + 'static>(
         &self,
         method: Method,
@@ -330,6 +349,7 @@ impl Connection {
         data: Option<ReqBody<R>>,
         headers: &mut HeaderMap,
         catch_status: bool,
+        token_request: bool,
     ) -> ConnectionResult<Response> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(ConnectionError::Disconnected);
@@ -384,86 +404,85 @@ impl Connection {
         let current_mirror = self.mirror_state.current.load();
 
         if let Some(mirror) = current_mirror.as_ref() {
-            let data_cloned: Option<ReqBody<R>> = match data.as_ref() {
-                Some(ReqBody::Form(form)) => Some(ReqBody::Form(form.clone())),
-                Some(ReqBody::Buf(buf)) => Some(ReqBody::Buf(buf.clone())),
-                _ => None,
-            };
+            // 不走mirror的情况：1.dragonfly没有授权的请求，即 mirror.config.auth_through==false && 没有AUTHORIZATION
+            // 走mirror：mirror.config.auth_through=false || mirror.config.auth_through=true && !token_request
+            // Authorization through mirror or
+            if !mirror.config.auth_through
+                || !token_request && headers.contains_key(HEADER_AUTHORIZATION)
+            {
+                // if let Some(auth) = headers.get(HEADER_AUTHORIZATION) {
+                //     if let Ok(auth_str) = auth.to_str() {
+                //         if auth_str.contains("Bearer") {
+                let data_cloned: Option<ReqBody<R>> = match data.as_ref() {
+                    Some(ReqBody::Form(form)) => Some(ReqBody::Form(form.clone())),
+                    Some(ReqBody::Buf(buf)) => Some(ReqBody::Buf(buf.clone())),
+                    _ => None,
+                };
 
-            let mirror_host = Url::parse(&mirror.config.host).map_err(ConnectionError::Url)?;
-
-            let mut current_url = Url::parse(url).map_err(ConnectionError::Url)?;
-
-            current_url
-                .set_scheme(mirror_host.scheme())
-                .map_err(|_| ConnectionError::Scheme)?;
-            current_url
-                .set_host(mirror_host.host_str())
-                .map_err(|_| ConnectionError::Host)?;
-            current_url
-                .set_port(mirror_host.port())
-                .map_err(|_| ConnectionError::Port)?;
-
-            for (key, value) in mirror.config.headers.iter() {
-                headers.insert(
-                    HeaderName::from_str(key).unwrap(),
-                    HeaderValue::from_str(value).unwrap(),
-                );
-            }
-
-            warn!("mirror call_inner headers: {:?}", headers);
-
-            let result = self.call_inner(
-                &self.client,
-                method.clone(),
-                current_url.to_string().as_str(),
-                &query,
-                data_cloned,
-                headers,
-                catch_status,
-                false,
-            );
-
-            match result {
-                Ok(resp) => {
-                    warn!("mirror call_inner ok resp.status(): {:?}", resp.status());
-                    if resp.status() < StatusCode::INTERNAL_SERVER_ERROR {
-                        return Ok(resp);
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "request mirror server failed, mirror: {:?},  error: {:?}",
-                        mirror, err
+                for (key, value) in mirror.config.headers.iter() {
+                    headers.insert(
+                        HeaderName::from_str(key).unwrap(),
+                        HeaderValue::from_str(value).unwrap(),
                     );
-                    mirror.failed_times.fetch_add(1, Ordering::Relaxed);
+                }
 
-                    if mirror.failed_times.load(Ordering::Relaxed) >= mirror.failed_limit {
-                        warn!(
-                            "reach to fail limit {}, disable mirror: {:?}",
-                            mirror.failed_limit, mirror
-                        );
-                        mirror.status.store(false, Ordering::Relaxed);
+                let current_url = mirror.mirror_url(url)?;
+                warn!("mirror server url {}", current_url);
 
-                        let mut idx = 0;
-                        loop {
-                            if idx == self.mirror_state.mirrors.len() {
-                                break None;
-                            }
-                            let m = &self.mirror_state.mirrors[idx];
-                            if m.status.load(Ordering::Relaxed) {
-                                warn!("mirror server has been changed to {:?}", m);
-                                break Some(m);
-                            }
+                let result = self.call_inner(
+                    &self.client,
+                    method.clone(),
+                    current_url.as_str(),
+                    &query,
+                    data_cloned,
+                    headers,
+                    catch_status,
+                    false,
+                );
 
-                            idx += 1;
+                match result {
+                    Ok(resp) => {
+                        if (resp.status() != StatusCode::UNAUTHORIZED
+                            || !mirror.config.auth_through)
+                            && resp.status() < StatusCode::INTERNAL_SERVER_ERROR
+                        {
+                            return Ok(resp);
                         }
-                        .map(|m| self.mirror_state.current.store(Some(m.clone())))
-                        .unwrap_or_else(|| self.mirror_state.current.store(None));
+                    }
+                    Err(err) => {
+                        warn!(
+                            "request mirror server failed, mirror: {:?},  error: {:?}",
+                            mirror, err
+                        );
+                        mirror.failed_times.fetch_add(1, Ordering::Relaxed);
+
+                        if mirror.failed_times.load(Ordering::Relaxed) >= mirror.failed_limit {
+                            warn!(
+                                "reach to fail limit {}, disable mirror: {:?}",
+                                mirror.failed_limit, mirror
+                            );
+                            mirror.status.store(false, Ordering::Relaxed);
+
+                            let mut idx = 0;
+                            loop {
+                                if idx == self.mirror_state.mirrors.len() {
+                                    break None;
+                                }
+                                let m = &self.mirror_state.mirrors[idx];
+                                if m.status.load(Ordering::Relaxed) {
+                                    warn!("mirror server has been changed to {:?}", m);
+                                    break Some(m);
+                                }
+
+                                idx += 1;
+                            }
+                            .map(|m| self.mirror_state.current.store(Some(m.clone())))
+                            .unwrap_or_else(|| self.mirror_state.current.store(None));
+                        }
                     }
                 }
+                warn!("Failed to request mirror server, fallback to original server.");
             }
-            warn!("Failed to request mirror server, fallback to original server.");
         }
 
         self.call_inner(
@@ -519,28 +538,23 @@ impl Connection {
         proxy: bool,
     ) -> ConnectionResult<Response> {
         // Only clone header when debugging to reduce potential overhead.
-        let display_headers = if max_level() >= Level::Debug {
-            let mut display_headers = headers.clone();
-            display_headers.remove(HEADER_AUTHORIZATION);
-            Some(display_headers)
-        } else {
-            None
-        };
+        // let display_headers = if max_level() >= Level::Debug {
+        //     let mut display_headers = headers.clone();
+        //     display_headers.remove(HEADER_AUTHORIZATION);
+        //     Some(display_headers)
+        // } else {
+        //     None
+        // };
         let has_data = data.is_some();
         let start = Instant::now();
-
-        warn!("request headers: {:?}", headers.clone());
 
         let mut rb = client.request(method.clone(), url).headers(headers.clone());
         if let Some(q) = query.as_ref() {
             rb = rb.query(q);
         }
 
-        warn!("request rb: {:?}", rb);
-
         let ret;
         if let Some(data) = data {
-            warn!("have data");
             match data {
                 ReqBody::Read(body, total) => {
                     let body = Body::sized(body, total as u64);
@@ -554,7 +568,6 @@ impl Connection {
                 }
             }
         } else {
-            warn!("no data");
             ret = rb.body("").send();
         }
 
@@ -563,7 +576,7 @@ impl Connection {
             std::thread::current().name().unwrap_or_default(),
             method,
             url,
-            display_headers,
+            headers,
             proxy,
             has_data,
             Instant::now().duration_since(start).as_millis(),
@@ -571,7 +584,17 @@ impl Connection {
 
         match ret {
             Err(err) => Err(ConnectionError::Common(err)),
-            Ok(resp) => respond(resp, catch_status),
+            Ok(resp) => {
+                warn!(
+                    "[111] resp.status(): {}, resp.headers: {:?}",
+                    resp.status(),
+                    resp.headers()
+                );
+                // if resp.status() == 401 {
+                //     panic!("resp.status() is 401");
+                // }
+                respond(resp, catch_status)
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::{Error, Read, Result};
 use std::sync::{Arc, RwLock};
 
+// use backtrace::Backtrace;
 use reqwest::blocking::Response;
 pub use reqwest::header::HeaderMap;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH};
@@ -187,6 +188,7 @@ impl RegistryState {
 
         let mut headers = HeaderMap::new();
         if let Some(auth_header) = &auth.header {
+            warn!("[111] auth_header.clone(): {:?}", auth_header.clone());
             headers.insert(HEADER_AUTHORIZATION, auth_header.clone());
         }
 
@@ -197,6 +199,7 @@ impl RegistryState {
                 Some(&query),
                 Some(ReqBody::Form(form)),
                 &mut headers,
+                true,
                 true,
             )
             .map_err(|e| einval!(format!("registry auth server request failed {:?}", e)))?;
@@ -331,24 +334,28 @@ impl RegistryReader {
             );
         }
 
-        warn!("url: {}, request headers: {:?}", url, headers);
-
         // For upload request with payload, the auth header should be cached
         // after create_upload(), so we can request registry server directly
         if let Some(data) = data {
             return self
                 .connection
-                .call(method, url, None, Some(data), &mut headers, catch_status)
+                .call(
+                    method,
+                    url,
+                    None,
+                    Some(data),
+                    &mut headers,
+                    catch_status,
+                    false,
+                )
                 .map_err(RegistryError::Request);
         }
 
         // Try to request registry server with `authorization` header
         let resp = self
             .connection
-            .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
+            .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false, false)
             .map_err(RegistryError::Request)?;
-
-        warn!("resp.status(): {}", resp.status());
 
         if resp.status() == StatusCode::UNAUTHORIZED {
             if let Some(resp_auth_header) = resp.headers().get(HEADER_WWW_AUTHENTICATE) {
@@ -363,12 +370,10 @@ impl RegistryReader {
                         HeaderValue::from_str(auth_header.as_str()).unwrap(),
                     );
 
-                    warn!("headers after AUTHENTICATE: {:?}", headers);
-
                     // Try to request registry server with `authorization` header again
                     let resp = self
                         .connection
-                        .call(method, url, None, data, &mut headers, catch_status)
+                        .call(method, url, None, data, &mut headers, catch_status, false)
                         .map_err(RegistryError::Request)?;
 
                     let status = resp.status();
@@ -415,6 +420,8 @@ impl RegistryReader {
         let cached_redirect = self.state.cached_redirect.get(&self.blob_id);
 
         if let Some(cached_redirect) = cached_redirect {
+            warn!("cached_redirect: {:?}", cached_redirect);
+
             resp = self
                 .connection
                 .call::<&[u8]>(
@@ -423,6 +430,7 @@ impl RegistryReader {
                     None,
                     None,
                     &mut headers,
+                    false,
                     false,
                 )
                 .map_err(RegistryError::Request)?;
@@ -480,6 +488,7 @@ impl RegistryReader {
                             None,
                             &mut headers,
                             true,
+                            false,
                         )
                         .map_err(RegistryError::Request);
                     match resp_ret {
@@ -511,6 +520,7 @@ impl BlobReader for RegistryReader {
             .state
             .url(&format!("/blobs/sha256:{}", self.blob_id), &[])
             .map_err(RegistryError::Url)?;
+        warn!("blob_size: {}", url);
         let resp =
             self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new(), true)?;
         let content_length = resp
@@ -550,6 +560,7 @@ impl Registry {
     #[allow(clippy::useless_let_if_seq)]
     pub fn new(config: serde_json::value::Value, id: Option<&str>) -> Result<Registry> {
         let id = id.ok_or_else(|| einval!("Registry backend requires blob_id"))?;
+        warn!("config: {}", config);
         let config: RegistryConfig = serde_json::from_value(config).map_err(|e| einval!(e))?;
         let con_config: ConnectionConfig = config.clone().into();
 
