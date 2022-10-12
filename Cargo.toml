@@ -75,3 +75,7 @@ virtiofs = ["fuse-backend-rs/vhost-user-fs", "vm-memory", "vhost", "vhost-user-b
 
 [workspace]
 members = ["api", "app", "error", "rafs", "storage", "utils", "blobfs"]
+
+
+[patch.crates-io]
+fuse-backend-rs = { git = "https://code.byted.org/containerimage/fuse-backend-rs.git", branch = "inner/v0.9.6/master" }
