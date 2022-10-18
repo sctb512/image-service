@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-rs"
-version = "2.1.0-rc.3.1"
+version = "2.1.0-vke.1"
 dependencies = [
  "anyhow",
  "base64",
