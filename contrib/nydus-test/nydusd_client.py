@@ -311,6 +311,11 @@ class NydusAPIClient:
         resp = requests.put(self.build_path("daemon/fuse/takeover"))
         return resp
 
+    @check_resp
+    def start_service(self):
+        resp = requests.put(self.build_path("daemon/start"))
+        return resp
+
     def takeover_nocheck(self):
         resp = requests.put(self.build_path("daemon/fuse/takeover"))
         # assert resp.status_code == 400

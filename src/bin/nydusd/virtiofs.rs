@@ -264,6 +264,10 @@ impl FsService for VirtioFsService {
     fn export_inflight_ops(&self) -> DaemonResult<Option<String>> {
         Err(DaemonError::Unsupported)
     }
+
+    fn recover_io(&self) -> DaemonResult<()> {
+        unimplemented!()
+    }
 }
 
 struct VirtiofsDaemon<S: 'static + VhostUserBackend<VringMutex> + Clone> {

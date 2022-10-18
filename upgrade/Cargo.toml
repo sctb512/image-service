@@ -1,0 +1,14 @@
+[package]
+name = "upgrade"
+version = "0.1.0"
+authors = ["The Nydus Developers"]
+edition = "2018"
+
+
+[dependencies]
+sendfd = "0.4.3"
+log = "0.4.8"
+
+snapshot = { git = "https://code.byted.org/containerimage/snapshot.git", branch = "master" }
+versionize = ">=0.1.6"
+versionize_derive = ">=0.1.3"
