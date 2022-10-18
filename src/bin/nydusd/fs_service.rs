@@ -105,6 +105,8 @@ pub trait FsService: Send + Sync {
         // Add mounts opaque to UpgradeManager
         if let Some(mut mgr_guard) = self.upgrade_mgr() {
             upgrade::add_mounts_state(&mut mgr_guard, cmd, index)?;
+            let vfs = self.get_vfs();
+            upgrade::save_vfs_states(&mut *mgr_guard, vfs)?;
         }
 
         Ok(())
@@ -172,6 +174,8 @@ pub trait FsService: Send + Sync {
         Ok(resp)
     }
     fn export_inflight_ops(&self) -> DaemonResult<Option<String>>;
+
+    fn recover_io(&self) -> DaemonResult<()>;
 }
 
 /// Validate prefetch file list from user input.
@@ -194,7 +198,7 @@ fn validate_prefetch_file_list(input: &Option<Vec<String>>) -> DaemonResult<Opti
     }
 }
 
-fn fs_backend_factory(cmd: &FsBackendMountCmd) -> DaemonResult<BackFileSystem> {
+pub fn fs_backend_factory(cmd: &FsBackendMountCmd) -> DaemonResult<BackFileSystem> {
     let prefetch_files = validate_prefetch_file_list(&cmd.prefetch_files)?;
 
     match cmd.fs_type {

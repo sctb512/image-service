@@ -362,6 +362,20 @@ impl DaemonStateMachineContext {
                                 if res.is_ok() {
                                     d.set_state(DaemonState::READY);
                                 }
+
+                                // Can't command kernel fuse to resend FUSE requests after starting fuse service loop
+                                // since it can move normal fuse request being processed by newly started nydusd.
+                                // Trigger kernel fuse resending before Start API should be OK. Even this nydusd can't
+                                // switches to RUNNING state, the kernel fuse messages are not missing.
+                                if let Some(s) = d.get_default_fs_service() {
+                                    s.recover_io()
+                                        .map_err(|e| {
+                                            error!("Recover FS io failed, {:?}", e);
+                                            e
+                                        })
+                                        .unwrap_or_default();
+                                }
+
                                 res
                             }
                             StopStateMachine => {

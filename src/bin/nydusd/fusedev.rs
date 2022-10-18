@@ -6,6 +6,7 @@
 use std::any::Any;
 use std::ffi::{CStr, CString};
 use std::fs::metadata;
+use std::fs::File;
 use std::io::{Error, Result};
 use std::ops::Deref;
 #[cfg(target_os = "linux")]
@@ -14,6 +15,7 @@ use std::os::linux::fs::MetadataExt;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{
@@ -41,6 +43,9 @@ use crate::daemon::{
 use crate::fs_service::{FsBackendCollection, FsBackendMountCmd, FsService};
 use crate::upgrade::{self, FailoverPolicy, UpgradeManager};
 use crate::DAEMON_CONTROLLER;
+
+// Per as linux kernel ioctl function signature, i32 should work fine.
+const FUSE_RESEND_IOCTL_MSG_CODE: u32 = 58879;
 
 #[derive(Serialize)]
 struct FuseOp {
@@ -233,6 +238,44 @@ impl FsService for FusedevFsService {
             Ok(Some(resp))
         }
     }
+
+    fn recover_io(&self) -> DaemonResult<()> {
+        match self.failover_policy {
+            FailoverPolicy::Flush => Err(DaemonError::Unsupported),
+            FailoverPolicy::Resend => {
+                if let Some(fd) = self
+                    .session
+                    .lock()
+                    .unwrap()
+                    .get_fuse_file()
+                    .map(|f| f.as_raw_fd())
+                {
+                    #[cfg(target_env = "gnu")]
+                    let ret = unsafe {
+                        libc::ioctl(
+                            fd,
+                            FUSE_RESEND_IOCTL_MSG_CODE.into(),
+                            std::ptr::null::<u8>() as *mut libc::c_void,
+                        )
+                    };
+
+                    #[cfg(target_env = "musl")]
+                    let ret = unsafe {
+                        libc::ioctl(fd, FUSE_RESEND_IOCTL_MSG_CODE as libc::c_int, 0 as i32)
+                    };
+
+                    if ret != 0 {
+                        error!(
+                            "Resend fuse requests failed, ignore. errno={}",
+                            Error::last_os_error()
+                        );
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
 }
 
 pub struct FusedevDaemon {
@@ -270,6 +313,10 @@ impl FusedevDaemon {
         self.fuse_service_threads.lock().unwrap().push(thread);
 
         Ok(())
+    }
+
+    pub fn restore_session(&self, f: File) {
+        self.service.session.lock().unwrap().set_fuse_file(f)
     }
 }
 
@@ -551,6 +598,7 @@ pub fn create_fuse_daemon(
         if let Some(cmd) = mount_cmd {
             daemon.service.mount(cmd)?;
         }
+
         daemon
             .service
             .session
@@ -558,6 +606,17 @@ pub fn create_fuse_daemon(
             .unwrap()
             .mount()
             .map_err(|e| eother!(e))?;
+
+        if let Some(f) = daemon.service.session.lock().unwrap().get_fuse_file() {
+            if let Some(m) = daemon.service.upgrade_mgr() {
+                // Not expect poisoned lock here.
+                m.inner.lock().unwrap().hold_file(f).map_err(|e| {
+                    error!("Failed to hold fusedev fd, {:?}", e);
+                    eother!(e)
+                })?;
+            }
+        }
+
         daemon
             .on_event(DaemonStateMachineInput::Mount)
             .map_err(|e| eother!(e))?;
