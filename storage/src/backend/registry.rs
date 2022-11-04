@@ -710,10 +710,7 @@ impl Registry {
                                     refresh_url.set_query(None);
 
                                     for pair in query {
-                                        refresh_url.query_pairs_mut().append_pair(
-                                            &pair.0.to_string()[..],
-                                            &pair.1.to_string()[..],
-                                        );
+                                        refresh_url.query_pairs_mut().append_pair(&pair.0, &pair.1);
                                     }
                                     refresh_url
                                         .query_pairs_mut()
