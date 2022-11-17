@@ -73,23 +73,29 @@ impl Persist<'_> for UpgradeManager {
             .states
             .iter()
             .filter_map(|(k, v)| {
-                let mut t = vec![0u8; STATE_MAX_BUF_LEN];
                 // Not expected dead lock here
                 let mut guard = v.lock().unwrap();
 
+                let mut t = vec![0u8; STATE_MAX_BUF_LEN];
+                let mut state_buf = Vec::new();
                 guard.seek(SeekFrom::Start(0)).unwrap();
-
-                guard
-                    .read(t.as_mut_slice())
-                    .map(|l| ManagedState {
-                        id: k.clone(),
-                        state: t[0..l].to_owned(),
-                    })
-                    .map_err(|e| {
-                        error!("Failed to extract state, this is serious problem, {}", e);
-                        e
-                    })
-                    .ok()
+                loop {
+                    match guard.read(t.as_mut_slice()) {
+                        Ok(size) => {
+                            if size == 0 {
+                                break Some(ManagedState {
+                                    id: k.clone(),
+                                    state: state_buf,
+                                });
+                            }
+                            state_buf.extend(&t[..size]);
+                        }
+                        Err(e) => {
+                            error!("Failed to extract state, this is serious problem, {}", e);
+                            break None;
+                        }
+                    }
+                }
             })
             .collect();
 
@@ -162,14 +168,21 @@ impl UpgradeManager {
         if let Some(s) = self.states.get(state_id) {
             // Not expected poisoned here.
             let mut reader = s.lock().unwrap();
+            let mut state_buf = Vec::new();
             let mut buf = vec![0u8; STATE_MAX_BUF_LEN];
-            let size = reader
-                .read(buf.as_mut_slice())
-                .map_err(UpgradeManagerError::IO)?;
+            loop {
+                let size = reader
+                    .read(buf.as_mut_slice())
+                    .map_err(UpgradeManagerError::IO)?;
+                if size == 0 {
+                    break;
+                }
+                state_buf.extend(&buf[0..size]);
+            }
 
-            debug!("restoring state size {}", size);
+            debug!("restoring state size {}", state_buf.len());
 
-            Ok(Some(buf[0..size].to_owned()))
+            Ok(Some(state_buf))
         } else {
             Ok(None)
         }
@@ -285,7 +298,7 @@ mod tests {
     use versionize_derive::Versionize;
 
     use super::UpgradeManagerError;
-    use crate::states_storage::mem_storage::MemoryStatesStorage;
+    use crate::{states_storage::mem_storage::MemoryStatesStorage, STATE_MAX_BUF_LEN};
 
     use super::UpgradeManager;
 
@@ -578,5 +591,45 @@ mod tests {
         assert_eq!(ss2.a, 789);
         // So version 2 version map uses the default value of `d`
         assert_eq!(ss2.ss2.d, 0xabcd);
+    }
+
+    #[test]
+    fn test_upgrade_hit_state_max_buffer_length() {
+        let vm1 = VersionMap::new();
+        let states_storage = Arc::new(MemoryStatesStorage::new(1024 * 1024 * 8));
+        let mut upgrade_manager1 = UpgradeManager::new(vm1, states_storage.clone());
+
+        let str1 = "A".repeat(STATE_MAX_BUF_LEN) + "abcde";
+        let ss1 = SS1 {
+            a: 678,
+            b: str1.to_string(),
+            c: 1.89,
+        };
+
+        let ss1_state_id = "ss";
+
+        upgrade_manager1.save_state(ss1_state_id, &ss1).unwrap();
+        upgrade_manager1.persist_states().unwrap();
+
+        // After upgrading
+
+        let vm2 = VersionMap::new();
+        let m = UpgradeManager::new(vm2.clone(), states_storage);
+        let upgrade_manager2 = m.fetch_states_and_restore().unwrap();
+
+        let s = upgrade_manager2
+            .restore_state(ss1_state_id)
+            .unwrap()
+            .unwrap();
+
+        let l = s.len();
+
+        let mut cursor = Cursor::new(s);
+
+        let ss2: SS2 = Snapshot::load(&mut cursor, l, vm2).unwrap();
+
+        assert_eq!(ss2.a, 678);
+        assert_eq!(ss2.d, 0x1234);
+        assert_eq!(ss2.b, str1);
     }
 }
