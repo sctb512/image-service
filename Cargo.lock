@@ -395,7 +395,7 @@ dependencies = [
 [[package]]
 name = "fuse-backend-rs"
 version = "0.9.6"
-source = "git+https://code.byted.org/containerimage/fuse-backend-rs.git?branch=inner/v0.9.6/master#45ed41fa2b1ed8a820446b1bf53cbf77a4a0fe0b"
+source = "git+https://code.byted.org/containerimage/fuse-backend-rs.git?branch=inner/v0.9.6/master#f717974020fa509ce2612f0548bc102271489db9"
 dependencies = [
  "arc-swap",
  "bitflags",
