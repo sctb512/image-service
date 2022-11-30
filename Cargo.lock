@@ -271,9 +271,9 @@ dependencies = [
 
 [[package]]
 name = "dbs-uhttp"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fd0544fe7ba81fa8deb8800843836d279a81b051e2e8ab046fe1b0cb096c1cc"
+checksum = "bcab9b457bf9cac784c38ad87a37eb15dad06e72751acdd556e442b3aa4b7248"
 dependencies = [
  "libc",
  "mio",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dbs-uhttp",
  "http",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "flexi_logger",
  "libc",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-blobfs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fuse-backend-rs",
  "libc",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-error"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "backtrace",
  "httpdate",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-rafs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-rs"
-version = "2.1.0-vke.1"
+version = "0.0.0-git"
 dependencies = [
  "anyhow",
  "base64",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-storage"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "nydus-utils"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "blake3",
  "flate2",

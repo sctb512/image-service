@@ -5,8 +5,12 @@
 //! Storage backend driver to access blobs on container image registry.
 use std::collections::HashMap;
 use std::io::{Error, Read, Result};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwapOption;
 use reqwest::blocking::Response;
 pub use reqwest::header::HeaderMap;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH};
@@ -102,6 +106,12 @@ impl HashCache {
 #[derive(Clone, serde::Deserialize)]
 struct TokenResponse {
     token: String,
+    #[serde(default = "default_expires_in")]
+    expires_in: u64,
+}
+
+fn default_expires_in() -> u64 {
+    10 * 60
 }
 
 #[derive(Debug)]
@@ -110,7 +120,7 @@ struct BasicAuth {
     realm: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BearerAuth {
     realm: String,
     service: String,
@@ -149,6 +159,11 @@ struct RegistryState {
     // Cache 30X redirect url
     // Example: RwLock<HashMap<"<blob_id>", "<redirected_url>">>
     cached_redirect: HashCache,
+
+    // The expiration time of the token, which is obtained from the registry server.
+    refresh_token_time: ArcSwapOption<u64>,
+    // Cache bearer auth for refreshing token.
+    cached_bearer_auth: ArcSwapOption<BearerAuth>,
 }
 
 impl RegistryState {
@@ -207,6 +222,18 @@ impl RegistryState {
                 e
             ))
         })?;
+        if let Ok(now_timestamp) = SystemTime::now().duration_since(UNIX_EPOCH) {
+            self.refresh_token_time
+                .store(Some(Arc::new(now_timestamp.as_secs() + ret.expires_in)));
+            info!(
+                "cached bearer auth, next time: {}",
+                now_timestamp.as_secs() + ret.expires_in
+            );
+        }
+
+        // Cache bearer auth for refreshing token.
+        self.cached_bearer_auth.store(Some(Arc::new(auth)));
+
         Ok(ret.token)
     }
 
@@ -605,13 +632,27 @@ impl Registry {
             blob_url_scheme: config.blob_url_scheme,
             blob_redirected_host: config.blob_redirected_host,
             cached_redirect: HashCache::new(),
+            refresh_token_time: ArcSwapOption::new(None),
+            cached_bearer_auth: ArcSwapOption::new(None),
         });
 
-        Ok(Registry {
+        let mirrors = connection.mirrors.clone();
+
+        let registry = Registry {
             connection,
             state,
             metrics: BackendMetrics::new(id, "registry"),
-        })
+        };
+
+        for mirror in mirrors.iter() {
+            if !mirror.config.auth_through {
+                registry.start_refresh_token_thread();
+                info!("Refresh token thread started.");
+                break;
+            }
+        }
+
+        Ok(registry)
     }
 
     fn get_authorization_info(auth: &Option<String>) -> Result<(String, String)> {
@@ -637,6 +678,50 @@ impl Registry {
         } else {
             Ok((String::new(), String::new()))
         }
+    }
+
+    fn start_refresh_token_thread(&self) {
+        let conn = self.connection.clone();
+        let state = self.state.clone();
+        // The default refresh token internal is 10 minutes.
+        let refresh_check_internal = 10 * 60;
+        thread::spawn(move || {
+            loop {
+                if let Ok(now_timestamp) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                    if let Some(next_refresh_timestamp) = state.refresh_token_time.load().as_deref()
+                    {
+                        // If the token will expire in next refresh check internal, get new token now.
+                        // Add 20 seconds to handle critical cases.
+                        if now_timestamp.as_secs() + refresh_check_internal + 20
+                            >= *next_refresh_timestamp
+                        {
+                            if let Some(cached_bearer_auth) =
+                                state.cached_bearer_auth.load().as_deref()
+                            {
+                                if let Ok(token) =
+                                    state.get_token(cached_bearer_auth.to_owned(), &conn)
+                                {
+                                    let new_cached_auth = format!("Bearer {}", token);
+                                    info!("Authorization token for registry has been refreshed.");
+                                    // Refresh authorization token
+                                    state
+                                        .cached_auth
+                                        .set(&state.cached_auth.get(), new_cached_auth);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if conn.shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_secs(refresh_check_internal));
+                if conn.shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+        });
     }
 }
 
@@ -723,6 +808,8 @@ mod tests {
             blob_redirected_host: "oss.alibaba-inc.com".to_string(),
             cached_auth: Default::default(),
             cached_redirect: Default::default(),
+            refresh_token_time: ArcSwapOption::new(None),
+            cached_bearer_auth: ArcSwapOption::new(None),
         };
 
         assert_eq!(

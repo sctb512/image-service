@@ -32,8 +32,12 @@ import (
 	"github.com/dragonflyoss/image-service/contrib/nydusify/pkg/viewer"
 )
 
-var versionGitCommit string
-var versionBuildTime string
+var (
+	revision   string
+	buildTime  string
+	gitVersion string
+)
+
 var maxCacheMaxRecords uint = 50
 
 const defaultLogLevel = logrus.InfoLevel
@@ -47,7 +51,7 @@ func isPossibleValue(excepted []string, value string) bool {
 	return false
 }
 
-// This only works for OSS backend rightnow
+// This only works for OSS backend right now
 func parseBackendConfig(backendConfigJSON, backendConfigFile string) (string, error) {
 	if backendConfigJSON != "" && backendConfigFile != "" {
 		return "", fmt.Errorf("--backend-config conflicts with --backend-config-file")
@@ -163,7 +167,7 @@ func getPrefetchPatterns(c *cli.Context) (string, error) {
 		patterns = prefetchedDir
 	}
 
-	if len(patterns) <= 0 {
+	if len(patterns) == 0 {
 		patterns = "/"
 	}
 
@@ -175,7 +179,7 @@ func main() {
 		FullTimestamp: true,
 	})
 
-	version := fmt.Sprintf("%s.%s", versionGitCommit, versionBuildTime)
+	version := fmt.Sprintf("\nVersion		: %s\nRevision	: %s\nGo version	: %s\nBuild time	: %s", gitVersion, revision, runtime.Version(), buildTime)
 
 	app := &cli.App{
 		Name:    "Nydusify",
@@ -360,7 +364,18 @@ func main() {
 					Usage:   "Read prefetch list from STDIN, please input absolute paths line by line",
 					EnvVars: []string{"PREFETCH_PATTERNS"},
 				},
-
+				&cli.StringFlag{
+					Name:    "compressor",
+					Value:   "zstd",
+					Usage:   "Algorithm to compress image data blob, possible values: none, lz4_block, zstd",
+					EnvVars: []string{"COMPRESSOR"},
+				},
+				&cli.StringFlag{
+					Name:    "chunk-size",
+					Value:   "0x100000",
+					Usage:   "size of nydus image data chunk, must be power of two and between 0x1000-0x100000, [default: 0x100000]",
+					EnvVars: []string{"CHUNK_SIZE"},
+				},
 				&cli.StringFlag{
 					Name:    "work-dir",
 					Value:   "./tmp",
@@ -462,6 +477,8 @@ func main() {
 					NydusifyVersion: version,
 					FsVersion:       fsVersion,
 					FsAlignChunk:    c.Bool("backend-aligned-chunk") || c.Bool("fs-align-chunk"),
+					Compressor:      c.String("compressor"),
+					ChunkSize:       c.String("chunk-size"),
 
 					ChunkDict: converter.ChunkDictOpt{
 						Args:     c.String("chunk-dict"),
@@ -772,6 +789,18 @@ func main() {
 					EnvVars:     []string{"FS_VERSION"},
 					Value:       "5",
 					DefaultText: "V5 format",
+				},
+				&cli.StringFlag{
+					Name:    "compressor",
+					Value:   "zstd",
+					Usage:   "Algorithm to compress image data blob, possible values: none, lz4_block, zstd",
+					EnvVars: []string{"COMPRESSOR"},
+				},
+				&cli.StringFlag{
+					Name:    "chunk-size",
+					Value:   "0x100000",
+					Usage:   "size of nydus image data chunk, must be power of two and between 0x1000-0x100000, [default: 0x100000]",
+					EnvVars: []string{"CHUNK_SIZE"},
 				},
 
 				&cli.StringFlag{
