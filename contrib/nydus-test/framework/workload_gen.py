@@ -289,7 +289,7 @@ class WorkloadGen:
         diff_files = list()
 
         for el in source_files:
-            if not el in target_files:
+            if el not in target_files:
                 diff_files.append(el)
 
         trimmed_diff_files = []

@@ -265,7 +265,10 @@ class Nydusify(LinuxCommand):
         layers = nydus_manifest["layers"]
 
         for l in layers:
-            if l["mediaType"] == "application/vnd.docker.image.rootfs.diff.tar.gzip":
+            if (
+                l["mediaType"] == "application/vnd.docker.image.rootfs.diff.tar.gzip"
+                or l["mediaType"] == "application/vnd.oci.image.layer.v1.tar+gzip"
+            ):
                 bootstrap_digest = l["digest"]
 
         import requests
