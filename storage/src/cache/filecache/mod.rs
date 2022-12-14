@@ -215,6 +215,7 @@ impl FileCacheEntry {
                 blob_file_path.to_string(),
                 blob_info.clone(),
                 Some(reader.clone()),
+                runtime.clone(),
             )?;
             Some(meta)
         } else {

@@ -51,6 +51,7 @@ impl FileCacheMeta {
         blob_file: String,
         blob_info: Arc<BlobInfo>,
         reader: Option<Arc<dyn BlobReader>>,
+        runtime: Arc<Runtime>,
     ) -> Result<Self> {
         let meta = FileCacheMeta {
             has_error: Arc::new(AtomicBool::new(false)),
@@ -58,7 +59,7 @@ impl FileCacheMeta {
         };
         let meta1 = meta.clone();
 
-        std::thread::spawn(move || {
+        runtime.spawn_blocking(move || {
             let mut retry = 0;
             let mut delayer = Delayer::new(
                 DelayType::BackOff,

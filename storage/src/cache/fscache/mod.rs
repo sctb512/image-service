@@ -210,7 +210,12 @@ impl FileCacheEntry {
             .map_err(|_e| eio!("failed to get blob reader"))?;
         let blob_compressed_size = Self::get_blob_size(&reader, &blob_info)?;
         let meta = if blob_info.meta_ci_is_valid() {
-            let meta = FileCacheMeta::new(blob_file_path, blob_info.clone(), Some(reader.clone()))?;
+            let meta = FileCacheMeta::new(
+                blob_file_path,
+                blob_info.clone(),
+                Some(reader.clone()),
+                runtime.clone(),
+            )?;
             Some(meta)
         } else {
             None
