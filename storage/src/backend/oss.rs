@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH};
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use sha1::Sha1;
 
 use nydus_api::http::OssConfig;
@@ -27,6 +27,7 @@ type HmacSha1 = Hmac<Sha1>;
 /// Error codes related to OSS storage backend.
 #[derive(Debug)]
 pub enum OssError {
+    Common(String),
     Auth(Error),
     Url(String),
     Request(ConnectionError),
@@ -180,10 +181,20 @@ impl BlobReader for OssReader {
             .connection
             .call::<&[u8]>(Method::GET, url.as_str(), None, None, &mut headers, false)
             .map_err(OssError::Request)?;
-        Ok(resp
-            .copy_to(&mut buf)
-            .map_err(OssError::Transport)
-            .map(|size| size as usize)?)
+
+        let status = resp.status();
+
+        if status == StatusCode::PARTIAL_CONTENT || status == StatusCode::OK {
+            // TODO: Support multiple range request
+            resp.copy_to(&mut buf)
+                .map_err(|e| BackendError::Oss(OssError::Transport(e)))
+                .map(|size| size as usize)
+        } else {
+            Err(BackendError::Oss(OssError::Common(format!(
+                "Unrecognized status code {} response {:?}",
+                status, resp
+            ))))
+        }
     }
 
     fn metrics(&self) -> &BackendMetrics {
