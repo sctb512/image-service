@@ -165,6 +165,9 @@ pub struct RafsConfig {
     // ZERO value means, amplifying user io is not enabled.
     #[serde(default = "default_amplify_io")]
     pub amplify_io: u32,
+    // In milliseconds
+    #[serde(default)]
+    pub warmup: u64,
 }
 
 impl RafsConfig {
@@ -218,6 +221,7 @@ pub struct Rafs {
     prefetch_all: bool,
     xattr_enabled: bool,
     amplify_io: u32,
+    warmup: u64,
 
     // static inode attributes
     i_uid: u32,
@@ -246,6 +250,7 @@ impl Rafs {
             digest_validate: conf.digest_validate,
             fs_prefetch: conf.fs_prefetch.enable,
             amplify_io: conf.amplify_io,
+            warmup: conf.warmup,
             prefetch_all: conf.fs_prefetch.prefetch_all,
             xattr_enabled: conf.enable_xattr,
 
@@ -324,6 +329,10 @@ impl Rafs {
             self.prefetch(r, prefetch_files);
         }
         self.initialized = true;
+
+        if self.warmup > 0 {
+            std::thread::sleep(1 * Duration::from_millis(self.warmup));
+        }
 
         Ok(())
     }
