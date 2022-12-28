@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::Result;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tokio::runtime::Runtime;
@@ -208,7 +208,6 @@ impl FileCacheEntry {
             .backend
             .get_reader(blob_info.blob_id())
             .map_err(|_e| eio!("failed to get blob reader"))?;
-        let blob_compressed_size = Self::get_blob_size(&reader, &blob_info)?;
         let meta = if blob_info.meta_ci_is_valid() {
             let meta = FileCacheMeta::new(
                 blob_file_path,
@@ -232,7 +231,7 @@ impl FileCacheEntry {
             runtime,
             workers,
 
-            blob_compressed_size,
+            blob_compressed_size: AtomicI64::new(-1),
             blob_uncompressed_size: blob_info.uncompressed_size(),
             compressor: blob_info.compressor(),
             digester: blob_info.digester(),
