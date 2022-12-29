@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: (Apache-2.0 AND BSD-3-Clause)
 
 use std::any::Any;
+use std::fs::{metadata, OpenOptions};
 use std::io::Result;
+use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -18,6 +20,7 @@ use crate::daemon::{
     DaemonError, DaemonResult, DaemonState, DaemonStateMachineContext, DaemonStateMachineInput,
     DaemonStateMachineSubscriber,
 };
+use crate::upgrade::UpgradeManager;
 use crate::{FsService, NydusDaemon, SubCmdArgs, DAEMON_CONTROLLER};
 #[cfg(target_os = "linux")]
 use nydus::ensure_threads;
@@ -31,7 +34,7 @@ pub struct ServiceController {
     supervisor: Option<String>,
 
     blob_cache_mgr: Arc<BlobCacheMgr>,
-
+    upgrade_mgr: Option<Mutex<UpgradeManager>>,
     fscache_enabled: AtomicBool,
     #[cfg(target_os = "linux")]
     fscache: Mutex<Option<Arc<crate::fs_cache::FsCacheHandler>>>,
@@ -215,7 +218,40 @@ impl DaemonStateMachineSubscriber for ServiceController {
     }
 }
 
-pub fn create_daemon(subargs: &SubCmdArgs, bti: BuildTimeInfo) -> Result<Arc<dyn NydusDaemon>> {
+fn is_sock_residual(sock: impl AsRef<Path>) -> bool {
+    if metadata(&sock).is_ok() {
+        return UnixStream::connect(&sock).is_err();
+    }
+
+    false
+}
+/// When nydusd starts, it checks that whether a previous nydusd died unexpected by:
+///     1. Checking whether /dev/cachefiles can be opened.
+///     2. Checking whether the API socket exists and the connection can established or not.
+fn is_crashed(sock: &impl AsRef<Path>) -> Result<bool> {
+    #[cfg(target_os = "linux")]
+    if let Err(_e) = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(false)
+        .open("/dev/cachefiles")
+    {
+        warn!("cachefiles devfd can not open, the devfd may hold by supervisor or another daemon.");
+        if is_sock_residual(sock) {
+            warn!("A previous daemon crashed! Try to failover later.");
+            return Ok(true);
+        }
+        warn!("another daemon is running, will exit!");
+        return Err(einval!("fscache stats error"));
+    }
+    Ok(false)
+}
+
+pub fn create_daemon(
+    subargs: &SubCmdArgs,
+    api_sock: Option<impl AsRef<Path>>,
+    bti: BuildTimeInfo,
+) -> Result<Arc<dyn NydusDaemon>> {
     let id = subargs.value_of("id").map(|id| id.to_string());
     let supervisor = subargs.value_of("supervisor").map(|s| s.to_string());
     let config = match subargs.value_of("config") {
@@ -230,36 +266,46 @@ pub fn create_daemon(subargs: &SubCmdArgs, bti: BuildTimeInfo) -> Result<Arc<dyn
 
     let (to_sm, from_client) = channel::<DaemonStateMachineInput>();
     let (to_client, from_sm) = channel::<DaemonResult<()>>();
+    let upgrade_mgr = supervisor
+        .as_ref()
+        .map(|s| Mutex::new(UpgradeManager::new(s.to_string().into())));
     let service_controller = ServiceController {
         bti,
         id,
         request_sender: Arc::new(Mutex::new(to_sm)),
         result_receiver: Mutex::new(from_sm),
-        state: Default::default(),
+        state: AtomicI32::new(DaemonState::INIT as i32),
         supervisor,
 
         blob_cache_mgr: Arc::new(BlobCacheMgr::new()),
-
+        upgrade_mgr,
         fscache_enabled: AtomicBool::new(false),
         #[cfg(target_os = "linux")]
         fscache: Mutex::new(None),
     };
 
     service_controller.initialize_blob_cache(&config)?;
-    #[cfg(target_os = "linux")]
-    if let Some(path) = subargs.value_of("fscache") {
-        service_controller.initialize_fscache_service(subargs, path)?;
-    }
-
     let daemon = Arc::new(service_controller);
     let machine = DaemonStateMachineContext::new(daemon.clone(), from_client, to_client);
     machine.kick_state_machine()?;
-    daemon
-        .on_event(DaemonStateMachineInput::Mount)
-        .map_err(|e| eother!(e))?;
-    daemon
-        .on_event(DaemonStateMachineInput::Start)
-        .map_err(|e| eother!(e))?;
 
+    // Without api socket, nydusd can't do neither live-upgrade nor failover, so the helper
+    // finding a victim is not necessary.
+    if (api_sock.as_ref().is_some()
+        && !subargs.is_present("upgrade")
+        && !is_crashed(api_sock.as_ref().unwrap())?)
+        || api_sock.is_none()
+    {
+        #[cfg(target_os = "linux")]
+        if let Some(path) = subargs.value_of("fscache") {
+            daemon.initialize_fscache_service(subargs, path)?;
+        }
+        daemon
+            .on_event(DaemonStateMachineInput::Mount)
+            .map_err(|e| eother!(e))?;
+        daemon
+            .on_event(DaemonStateMachineInput::Start)
+            .map_err(|e| eother!(e))?;
+    }
     Ok(daemon)
 }
