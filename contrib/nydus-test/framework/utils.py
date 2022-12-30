@@ -443,7 +443,10 @@ class Skopeo:
 
         # manifest = None
         digest = None
-        if m["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json":
+        if (
+            m["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json"
+            or m["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+        ):
             manifest = m
         elif (
             m["mediaType"]
