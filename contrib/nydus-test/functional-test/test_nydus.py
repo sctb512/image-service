@@ -505,9 +505,7 @@ def test_pseudo_fs(nydus_anchor, nydus_image: RafsImage, rafs_conf: RafsConf):
     conf.set_rafs_backend(Backend.BACKEND_PROXY)
     conf.dump_rafs_conf()
 
-    nc.pseudo_fs_mount(
-        nydus_image.bootstrap_path, f"/pseudo{suffix}", conf.path(), None
-    )
+    nc.mount_rafs(nydus_image.bootstrap_path, f"/pseudo{suffix}", conf.path(), None)
 
     ###
     suffix = "2"
@@ -516,7 +514,7 @@ def test_pseudo_fs(nydus_anchor, nydus_image: RafsImage, rafs_conf: RafsConf):
     conf.set_rafs_backend(Backend.BACKEND_PROXY)
     conf.dump_rafs_conf()
 
-    nc.pseudo_fs_mount(image1.bootstrap_path, f"/pseudo{suffix}", conf.path(), None)
+    nc.mount_rafs(image1.bootstrap_path, f"/pseudo{suffix}", conf.path(), None)
 
     ###
     suffix = "3"
@@ -525,7 +523,7 @@ def test_pseudo_fs(nydus_anchor, nydus_image: RafsImage, rafs_conf: RafsConf):
     conf.set_rafs_backend(Backend.BACKEND_PROXY)
     conf.dump_rafs_conf()
 
-    nc.pseudo_fs_mount(image2.bootstrap_path, f"/pseudo{suffix}", conf.path(), None)
+    nc.mount_rafs(image2.bootstrap_path, f"/pseudo{suffix}", conf.path(), None)
 
     wg1 = WorkloadGen(
         os.path.join(nydus_anchor.mountpoint, "pseudo1"), nydus_image.rootfs()

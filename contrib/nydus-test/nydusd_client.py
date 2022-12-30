@@ -265,7 +265,7 @@ class NydusAPIClient:
         resp = requests.put(path, data=body_json)
 
     @check_resp
-    def pseudo_fs_mount(
+    def mount_rafs(
         self, bootstrap, mountpoint, config, prefetch_files: list = None, fs_type="rafs"
     ):
 

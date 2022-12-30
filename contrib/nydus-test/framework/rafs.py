@@ -597,8 +597,6 @@ class NydusDaemon(utils.ArtifactProcess):
         # Set default part
         self.apisock("api_sock").log_level(self.anchor.log_level)
 
-        self.params.mountpoint(self.mountpoint)
-
         if self.conf is not None:
             self.params.config(self.conf.path())
 
@@ -679,6 +677,8 @@ class NydusDaemon(utils.ArtifactProcess):
         :limited_mem: Unit is KB, limit nydusd process virtual memory usage thus to
                      inject some faults.
         """
+
+        self.params.mountpoint(self.mountpoint)
         cmd = str(self).split()
         self.anchor.checker_sock = self.get_apisock()
 
