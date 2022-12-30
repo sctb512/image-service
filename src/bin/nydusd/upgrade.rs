@@ -189,8 +189,10 @@ pub fn update_mounts_state(mgr: &mut UpgradeManager, cmd: FsBackendMountCmd) -> 
 }
 
 pub fn remove_mounts_state(mgr: &mut UpgradeManager, cmd: FsBackendUmountCmd) -> DaemonResult<()> {
+    let mut mount_state_id = MOUNT_STATE_ID_PREFIX.to_string();
+    mount_state_id.push_str(&cmd.mountpoint);
     // Not expected poisoned lock here.
-    mgr.inner().deref_mut().remove_state(&cmd.mountpoint);
+    mgr.inner().deref_mut().remove_state(&mount_state_id);
 
     Ok(())
 }
