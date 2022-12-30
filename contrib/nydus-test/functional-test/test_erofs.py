@@ -1,6 +1,5 @@
 from nydus_anchor import NydusAnchor
 from rafs import NydusDaemon, RafsImage, BlobEntryConf, Backend
-import pytest
 import uuid
 from erofs import Erofs
 from nydusd_client import NydusAPIClient
