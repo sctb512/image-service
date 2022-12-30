@@ -149,12 +149,12 @@ def test_backend_swap(
     ).mount()
 
     nc = NydusAPIClient(rafs.get_apisock())
-    nc.pseudo_fs_mount(nydus_scratch_image.bootstrap_path, "/", rafs_conf.path(), None)
+    nc.mount_rafs(nydus_scratch_image.bootstrap_path, "/", rafs_conf.path(), None)
     nc.umount_rafs("/")
     assert len(os.listdir(nydus_anchor.mountpoint)) == 0
 
     mp = "/pseudo1"
-    nc.pseudo_fs_mount(nydus_scratch_image.bootstrap_path, mp, rafs_conf.path(), None)
+    nc.mount_rafs(nydus_scratch_image.bootstrap_path, mp, rafs_conf.path(), None)
 
     rafs_conf_2nd = RafsConf(nydus_anchor, nydus_scratch_image)
     rafs_conf_2nd.set_rafs_backend(
@@ -246,7 +246,7 @@ def test_api_mount_with_prefetch(
     )
 
     nc = NydusAPIClient(rafs.get_apisock())
-    nc.pseudo_fs_mount(
+    nc.mount_rafs(
         nydus_image.bootstrap_path,
         "/pseudo_fs_1",
         rafs_conf.path(),

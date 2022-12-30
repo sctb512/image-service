@@ -283,9 +283,9 @@ def test_api_mounted_rafs(nydus_anchor: NydusAnchor, rafs_conf: RafsConf):
 
     nc = NydusAPIClient(daemon.get_apisock())
     nc.get_wait_daemon(wait_state="RUNNING")
-    nc.pseudo_fs_mount(rafs_image1.bootstrap_path, "/rafs1", rafs_conf.path(), None)
-    nc.pseudo_fs_mount(rafs_image2.bootstrap_path, "/rafs2", rafs_conf.path(), None)
-    nc.pseudo_fs_mount(rafs_image3.bootstrap_path, "/rafs3", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image1.bootstrap_path, "/rafs1", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image2.bootstrap_path, "/rafs2", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image3.bootstrap_path, "/rafs3", rafs_conf.path(), None)
 
     victim1_fd = os.open(victim1_path, os.O_RDONLY)
     os.read(victim1_fd, 10000)
@@ -466,11 +466,11 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     nc = NydusAPIClient(daemon.get_apisock())
     nc.get_wait_daemon(wait_state="RUNNING")
     time.sleep(1)
-    nc.pseudo_fs_mount(rafs_image1.bootstrap_path, "/rafs1", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image1.bootstrap_path, "/rafs1", rafs_conf.path(), None)
     time.sleep(1)
-    nc.pseudo_fs_mount(rafs_image2.bootstrap_path, "/rafs2", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image2.bootstrap_path, "/rafs2", rafs_conf.path(), None)
     time.sleep(1)
-    nc.pseudo_fs_mount(rafs_image3.bootstrap_path, "/rafs3", rafs_conf.path(), None)
+    nc.mount_rafs(rafs_image3.bootstrap_path, "/rafs3", rafs_conf.path(), None)
 
     victim1_fd = os.open(victim1_path, os.O_RDONLY)
     os.read(victim1_fd, 10000)
@@ -520,7 +520,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     daemon2 = (
         NydusDaemon(nydus_anchor, None, None)
         .thread_num(6)
-        .apisock("new-apisock")
+        .apisock(daemon.get_apisock())
         .supervisor(watch_sock_path)
         .failover_policy("resend")
         .id("new-daemon")
@@ -563,7 +563,7 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
     daemon3 = (
         NydusDaemon(nydus_anchor, None, None)
         .thread_num(6)
-        .apisock("new-apisock3")
+        .apisock(daemon.get_apisock())
         .supervisor(watch_sock_path)
         .failover_policy("resend")
         .id("new-daemon3")
@@ -594,10 +594,14 @@ def test_api_mounted_rafs_failover(nydus_anchor: NydusAnchor, rafs_conf: RafsCon
 
     workload_gen4.finish_torture_read()
 
-    assert workload_gen1.io_error == False
-    assert workload_gen2.io_error == False
-    assert workload_gen3.io_error == False
-    assert workload_gen4.io_error == False
+    assert not workload_gen1.io_error
+    assert not workload_gen2.io_error
+    assert not workload_gen3.io_error
+    assert not workload_gen4.io_error
+
+    nc.umount_rafs("/rafs1")
+    nc.umount_rafs("/rafs2")
+    nc.umount_rafs("/rafs3")
 
     inspect_sys_fuse()
 
