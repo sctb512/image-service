@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH};
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use sha1::Sha1;
 
 use nydus_api::http::OssConfig;
@@ -27,6 +27,7 @@ type HmacSha1 = Hmac<Sha1>;
 /// Error codes related to OSS storage backend.
 #[derive(Debug)]
 pub enum OssError {
+    Common(String),
     Auth(Error),
     Url(String),
     Request(ConnectionError),
@@ -143,16 +144,16 @@ impl BlobReader for OssReader {
 
         let resp = self
             .connection
-            .call::<&[u8]>(
-                Method::HEAD,
-                url.as_str(),
-                None,
-                None,
-                &mut headers,
-                true,
-                false,
-            )
+            .call::<&[u8]>(Method::HEAD, url.as_str(), None, None, &mut headers, false)
             .map_err(OssError::Request)?;
+
+        if resp.status() != StatusCode::OK && resp.status() != StatusCode::NO_CONTENT {
+            return Err(BackendError::Oss(OssError::Response(format!(
+                "head blob size, status {}",
+                resp.status()
+            ))));
+        }
+
         let content_length = resp
             .headers()
             .get(CONTENT_LENGTH)
@@ -186,20 +187,22 @@ impl BlobReader for OssReader {
         // Safe because the the call() is a synchronous operation.
         let mut resp = self
             .connection
-            .call::<&[u8]>(
-                Method::GET,
-                url.as_str(),
-                None,
-                None,
-                &mut headers,
-                true,
-                false,
-            )
+            .call::<&[u8]>(Method::GET, url.as_str(), None, None, &mut headers, false)
             .map_err(OssError::Request)?;
-        Ok(resp
-            .copy_to(&mut buf)
-            .map_err(OssError::Transport)
-            .map(|size| size as usize)?)
+
+        let status = resp.status();
+
+        if status == StatusCode::PARTIAL_CONTENT || status == StatusCode::OK {
+            // TODO: Support multiple range request
+            resp.copy_to(&mut buf)
+                .map_err(|e| BackendError::Oss(OssError::Transport(e)))
+                .map(|size| size as usize)
+        } else {
+            Err(BackendError::Oss(OssError::Common(format!(
+                "Unrecognized status code {} response {:?}",
+                status, resp
+            ))))
+        }
     }
 
     fn metrics(&self) -> &BackendMetrics {

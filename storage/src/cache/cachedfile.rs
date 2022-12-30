@@ -14,7 +14,7 @@ use std::io::{ErrorKind, Result, Seek, SeekFrom};
 use std::mem::ManuallyDrop;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -111,7 +111,7 @@ pub(crate) struct FileCacheEntry {
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) workers: Arc<AsyncWorkerMgr>,
 
-    pub(crate) blob_compressed_size: u64,
+    pub(crate) blob_compressed_size: AtomicI64,
     pub(crate) blob_uncompressed_size: u64,
     pub(crate) compressor: compress::Algorithm,
     pub(crate) digester: digest::Algorithm,
@@ -159,7 +159,15 @@ impl BlobCache for FileCacheEntry {
     }
 
     fn blob_compressed_size(&self) -> Result<u64> {
-        Ok(self.blob_compressed_size)
+        let size = self.blob_compressed_size.load(Ordering::Relaxed);
+        if size > 0 {
+            Ok(size as u64)
+        } else {
+            let blob_compressed_size = Self::get_blob_size(&self.reader, &self.blob_info)?;
+            self.blob_compressed_size
+                .store(blob_compressed_size as i64, Ordering::Relaxed);
+            Ok(blob_compressed_size)
+        }
     }
 
     fn compressor(&self) -> compress::Algorithm {

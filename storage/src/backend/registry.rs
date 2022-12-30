@@ -22,9 +22,7 @@ use url::{ParseError, Url};
 use nydus_api::http::RegistryConfig;
 use nydus_utils::metrics::BackendMetrics;
 
-use crate::backend::connection::{
-    is_success_status, respond, Connection, ConnectionConfig, ConnectionError, ReqBody,
-};
+use crate::backend::connection::{Connection, ConnectionConfig, ConnectionError, ReqBody};
 use crate::backend::{BackendError, BackendResult, BlobBackend, BlobReader};
 
 const REGISTRY_CLIENT_ID: &str = "nydus-registry-client";
@@ -45,7 +43,7 @@ pub enum RegistryError {
     Scheme(String),
     Auth(String),
     ResponseHead(String),
-    Response(std::io::Error),
+    Response(String),
     Transport(reqwest::Error),
 }
 
@@ -73,10 +71,11 @@ impl Cache {
         String::new()
     }
 
-    fn set(&self, last: &str, current: String) {
-        if last != current {
+    fn set(&self, new: &str) {
+        let current = self.get();
+        if new != current {
             let mut cached_guard = self.0.write().unwrap();
-            *cached_guard = current;
+            *cached_guard = new.to_string();
         }
     }
 }
@@ -187,17 +186,16 @@ struct RegistryState {
 }
 
 impl RegistryState {
-    fn url(&self, path: &str, query: &[&str]) -> std::result::Result<String, ParseError> {
-        let path = if query.is_empty() {
-            format!("/v2/{}{}", self.repo, path)
-        } else {
-            format!("/v2/{}{}?{}", self.repo, path, query.join("&"))
-        };
-        let url = format!("{}://{}", self.scheme, self.host.as_str());
-        let url = Url::parse(url.as_str())?;
-        let url = url.join(path.as_str())?;
+    fn blob_url(&self, blob_id: &str) -> String {
+        let url = format!(
+            "{}://{}/v2/{}/blobs/sha256:{}",
+            self.scheme,
+            self.host.as_str(),
+            self.repo,
+            blob_id
+        );
 
-        Ok(url.to_string())
+        url
     }
 
     fn needs_fallback_http(&self, e: &dyn Error) -> bool {
@@ -224,7 +222,7 @@ impl RegistryState {
     }
 
     /// Request registry authentication server to get bearer token
-    fn get_token(&self, auth: BearerAuth, connection: &Arc<Connection>) -> Result<String> {
+    fn get_token(&self, auth: BearerAuth, connection: &Arc<Connection>) -> RegistryResult<String> {
         // The information needed for getting token needs to be placed both in
         // the query and in the body to be compatible with different registry
         // implementations, which have been tested on these platforms:
@@ -256,15 +254,25 @@ impl RegistryState {
                 Some(ReqBody::Form(form)),
                 &mut headers,
                 true,
-                true,
             )
-            .map_err(|e| einval!(format!("registry auth server request failed {:?}", e)))?;
+            .map_err(|e| {
+                RegistryError::Auth(format!("registry auth server request failed {:?}", e))
+            })?;
+
+        if token_resp.status() != StatusCode::OK {
+            return Err(RegistryError::Auth(format!(
+                "authorized error, status {}",
+                token_resp.status()
+            )));
+        }
+
         let ret: TokenResponse = token_resp.json().map_err(|e| {
-            einval!(format!(
-                "registry auth server response decode failed: {:?}",
+            RegistryError::Auth(format!(
+                "decode registry auth server response failed: {:?}",
                 e
             ))
         })?;
+
         if let Ok(now_timestamp) = SystemTime::now().duration_since(UNIX_EPOCH) {
             self.refresh_token_time
                 .store(Some(Arc::new(now_timestamp.as_secs() + ret.expires_in)));
@@ -280,13 +288,13 @@ impl RegistryState {
         Ok(ret.token)
     }
 
-    fn get_auth_header(&self, auth: Auth, connection: &Arc<Connection>) -> Result<String> {
+    fn get_auth_header(&self, auth: Auth, connection: &Arc<Connection>) -> RegistryResult<String> {
         match auth {
             Auth::Basic(_) => self
                 .auth
                 .as_ref()
                 .map(|auth| format!("Basic {}", auth))
-                .ok_or_else(|| einval!("invalid auth config")),
+                .ok_or_else(|| RegistryError::Auth("invalid auth config".to_string())),
             Auth::Bearer(auth) => {
                 let token = self.get_token(auth, connection)?;
                 Ok(format!("Bearer {}", token))
@@ -391,42 +399,20 @@ impl RegistryReader {
         &self,
         method: Method,
         url: &str,
-        data: Option<ReqBody<R>>,
         mut headers: HeaderMap,
-        catch_status: bool,
     ) -> RegistryResult<Response> {
-        // Try get authorization header from cache for this request
-        let mut last_cached_auth = String::new();
         let cached_auth = self.state.cached_auth.get();
         if !cached_auth.is_empty() {
-            last_cached_auth = cached_auth.clone();
             headers.insert(
                 HEADER_AUTHORIZATION,
                 HeaderValue::from_str(cached_auth.as_str()).unwrap(),
             );
         }
 
-        // For upload request with payload, the auth header should be cached
-        // after create_upload(), so we can request registry server directly
-        if let Some(data) = data {
-            return self
-                .connection
-                .call(
-                    method,
-                    url,
-                    None,
-                    Some(data),
-                    &mut headers,
-                    catch_status,
-                    false,
-                )
-                .map_err(RegistryError::Request);
-        }
-
         // Try to request registry server with `authorization` header
         let mut resp = self
             .connection
-            .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false, false)
+            .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
             .map_err(RegistryError::Request)?;
         if resp.status() == StatusCode::UNAUTHORIZED {
             if headers.contains_key(HEADER_AUTHORIZATION) {
@@ -441,40 +427,35 @@ impl RegistryReader {
 
                 resp = self
                     .connection
-                    .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false, false)
+                    .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
                     .map_err(RegistryError::Request)?;
             };
 
             if let Some(resp_auth_header) = resp.headers().get(HEADER_WWW_AUTHENTICATE) {
                 // Get token from registry authorization server
                 if let Some(auth) = RegistryState::parse_auth(resp_auth_header, &self.state.auth) {
-                    let auth_header = self
-                        .state
-                        .get_auth_header(auth, &self.connection)
-                        .map_err(|e| RegistryError::Common(e.to_string()))?;
+                    let auth_header = self.state.get_auth_header(auth, &self.connection)?;
 
                     headers.insert(
                         HEADER_AUTHORIZATION,
                         HeaderValue::from_str(auth_header.as_str()).unwrap(),
                     );
 
-                    // Try to request registry server with `authorization` header again
-                    let resp = self
-                        .connection
-                        .call(method, url, None, data, &mut headers, catch_status, false)
-                        .map_err(RegistryError::Request)?;
+                    // Cache authorization header for next request
+                    // Cache the auth earlier, so other threads have bigger chance to reuse the auth.
+                    self.state.cached_auth.set(auth_header.as_str());
 
-                    let status = resp.status();
-                    if is_success_status(status) {
-                        // Cache authorization header for next request
-                        self.state.cached_auth.set(&last_cached_auth, auth_header)
-                    }
-                    return respond(resp, catch_status).map_err(RegistryError::Request);
+                    // Try to request registry server with `authorization` header again,
+                    // It's exactly a resend of the original request!
+                    resp = self
+                        .connection
+                        .call::<&[u8]>(method, url, None, None, &mut headers, false)
+                        .map_err(RegistryError::Request)?;
                 }
             }
         }
 
-        respond(resp, catch_status).map_err(RegistryError::Request)
+        Ok(resp)
     }
 
     /// Read data from registry server
@@ -494,156 +475,150 @@ impl RegistryReader {
         offset: u64,
         allow_retry: bool,
     ) -> RegistryResult<usize> {
-        let url = format!("/blobs/sha256:{}", self.blob_id);
-        let url = self
-            .state
-            .url(url.as_str(), &[])
-            .map_err(RegistryError::Url)?;
         let mut headers = HeaderMap::new();
         let end_at = offset + buf.len() as u64 - 1;
         let range = format!("bytes={}-{}", offset, end_at);
         headers.insert("Range", range.parse().unwrap());
 
-        let mut resp;
-        let cached_redirect = self.state.cached_redirect.get(&self.blob_id);
+        let url = if let Some(redirect_url) = self.state.cached_redirect.get(&self.blob_id) {
+            redirect_url
+        } else {
+            self.state.blob_url(self.blob_id.as_str())
+        };
 
-        if let Some(cached_redirect) = cached_redirect {
-            resp = self
-                .connection
-                .call::<&[u8]>(
-                    Method::GET,
-                    cached_redirect.as_str(),
-                    None,
-                    None,
-                    &mut headers,
-                    false,
-                    false,
-                )
-                .map_err(RegistryError::Request)?;
-
-            // The request has expired or has been denied, need to re-request
-            if allow_retry
-                && vec![StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN].contains(&resp.status())
+        let mut resp = match self.request::<&[u8]>(Method::GET, url.as_str(), headers.clone()) {
+            Ok(res) => res,
+            Err(RegistryError::Request(ConnectionError::Common(e)))
+                if self.state.needs_fallback_http(&e) =>
             {
-                warn!(
-                    "The redirected link has expired: {}, will retry read",
-                    cached_redirect.as_str()
-                );
-                self.state.cached_redirect.remove(&self.blob_id);
-                // Try read again only once
-                return self._try_read(buf, offset, false);
+                self.state.fallback_http();
+                let url = self.state.blob_url(self.blob_id.as_str());
+                self.request::<&[u8]>(Method::GET, url.as_str(), headers.clone())?
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
+        let status = resp.status();
+
+        if status == StatusCode::PARTIAL_CONTENT || status == StatusCode::OK {
+            resp.copy_to(&mut buf)
+                .map_err(RegistryError::Transport)
+                .map(|size| size as usize)
+        } else if REDIRECTED_STATUS_CODE.contains(&status) {
+            // Handle redirect request and cache redirect url
+            let l = self.redirect(&resp)?;
+            self.state.cached_redirect.set(self.blob_id.clone(), l);
+            if allow_retry {
+                // Only allow retrying for once.
+                self._try_read(buf, offset, false)
+            } else {
+                Err(RegistryError::Common(format!(
+                    "no more retry, status {}",
+                    status
+                )))
+            }
+        } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            warn!(
+                "The redirected link has expired: {}, status {}, will retry read",
+                url.as_str(),
+                status
+            );
+            self.state.cached_redirect.remove(&self.blob_id);
+            if allow_retry {
+                // Only allow retrying for once.
+                self._try_read(buf, offset, false)
+            } else {
+                Err(RegistryError::Common(format!(
+                    "no more retry, status {}, response {:?}",
+                    status, resp
+                )))
             }
         } else {
-            resp = match self.request::<&[u8]>(
-                Method::GET,
-                url.as_str(),
-                None,
-                headers.clone(),
-                false,
-            ) {
-                Ok(res) => res,
-                Err(RegistryError::Request(ConnectionError::Common(e)))
-                    if self.state.needs_fallback_http(&e) =>
-                {
-                    self.state.fallback_http();
-                    let url = self
-                        .state
-                        .url(format!("/blobs/sha256:{}", self.blob_id).as_str(), &[])
-                        .map_err(RegistryError::Url)?;
-                    self.request::<&[u8]>(Method::GET, url.as_str(), None, headers.clone(), false)?
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-            let status = resp.status();
-
-            // Handle redirect request and cache redirect url
-            if REDIRECTED_STATUS_CODE.contains(&status) {
-                if let Some(location) = resp.headers().get("location") {
-                    let location = location.to_str().unwrap();
-                    let mut location = Url::parse(location).map_err(RegistryError::Url)?;
-                    // Note: Some P2P proxy server supports only scheme specified origin blob server,
-                    // so we need change scheme to `blob_url_scheme` here
-                    if !self.state.blob_url_scheme.is_empty() {
-                        location
-                            .set_scheme(&self.state.blob_url_scheme)
-                            .map_err(|_| {
-                                RegistryError::Scheme(self.state.blob_url_scheme.clone())
-                            })?;
-                    }
-                    if !self.state.blob_redirected_host.is_empty() {
-                        location
-                            .set_host(Some(self.state.blob_redirected_host.as_str()))
-                            .map_err(|e| {
-                                error!(
-                                    "Failed to set blob redirected host to {}: {:?}",
-                                    self.state.blob_redirected_host.as_str(),
-                                    e
-                                );
-                                RegistryError::Url(e)
-                            })?;
-                        debug!("New redirected location {:?}", location.host_str());
-                    }
-                    let resp_ret = self
-                        .connection
-                        .call::<&[u8]>(
-                            Method::GET,
-                            location.as_str(),
-                            None,
-                            None,
-                            &mut headers,
-                            true,
-                            false,
-                        )
-                        .map_err(RegistryError::Request);
-                    match resp_ret {
-                        Ok(_resp) => {
-                            resp = _resp;
-                            self.state
-                                .cached_redirect
-                                .set(self.blob_id.clone(), location.as_str().to_string())
-                        }
-                        Err(err) => {
-                            return Err(err);
-                        }
-                    }
-                };
-            } else {
-                resp = respond(resp, true).map_err(RegistryError::Request)?;
-            }
+            self.state.cached_redirect.remove(&self.blob_id);
+            Err(RegistryError::Common(format!(
+                "Unrecognized status code {}, response {:?}",
+                status, resp
+            )))
         }
+    }
 
-        resp.copy_to(&mut buf)
-            .map_err(RegistryError::Transport)
-            .map(|size| size as usize)
+    /// Handle URL redirection, it may tweak the redirected location as per
+    /// Rafs configuration.
+    fn redirect(&self, resp: &Response) -> RegistryResult<String> {
+        if let Some(location) = resp.headers().get("location") {
+            let location = location
+                .to_str()
+                .map_err(|e| RegistryError::Response(format!("invalidate location, {:?}", e)))?;
+
+            let mut url = if !self.state.blob_redirected_host.is_empty()
+                || !self.state.blob_url_scheme.is_empty()
+            {
+                Some(Url::parse(location).map_err(RegistryError::Url)?)
+            } else {
+                None
+            };
+
+            if let Some(r) = url.as_mut() {
+                // Note: Some P2P proxy server supports only scheme specified origin blob server,
+                // so we need change scheme to `blob_url_scheme` here
+                if !self.state.blob_url_scheme.is_empty() {
+                    r.set_scheme(&self.state.blob_url_scheme)
+                        .map_err(|_| RegistryError::Scheme(self.state.blob_url_scheme.clone()))?;
+                }
+                if !self.state.blob_redirected_host.is_empty() {
+                    r.set_host(Some(self.state.blob_redirected_host.as_str()))
+                        .map_err(|e| {
+                            error!(
+                                "Failed to set blob redirected host to {}: {:?}",
+                                self.state.blob_redirected_host.as_str(),
+                                e
+                            );
+                            RegistryError::Url(e)
+                        })?;
+                    debug!("New redirected location {:?}", r.host_str());
+                }
+            }
+
+            if let Some(ref r) = url {
+                Ok(r.to_string())
+            } else {
+                Ok(location.to_string())
+            }
+        } else {
+            Err(RegistryError::Response(format!(
+                "no location when handling redirect, response {:?}",
+                resp
+            )))
+        }
     }
 }
 
 impl BlobReader for RegistryReader {
     fn blob_size(&self) -> BackendResult<u64> {
-        let url = self
-            .state
-            .url(&format!("/blobs/sha256:{}", self.blob_id), &[])
-            .map_err(RegistryError::Url)?;
+        let url = self.state.blob_url(self.blob_id.as_str());
 
-        let resp =
-            match self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new(), true) {
-                Ok(res) => res,
-                Err(RegistryError::Request(ConnectionError::Common(e)))
-                    if self.state.needs_fallback_http(&e) =>
-                {
-                    self.state.fallback_http();
-                    let url = self
-                        .state
-                        .url(format!("/blobs/sha256:{}", self.blob_id).as_str(), &[])
-                        .map_err(RegistryError::Url)?;
-                    self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new(), true)?
-                }
-                Err(e) => {
-                    return Err(BackendError::Registry(e));
-                }
-            };
+        let resp = match self.request::<&[u8]>(Method::HEAD, url.as_str(), HeaderMap::new()) {
+            Ok(res) => res,
+            Err(RegistryError::Request(ConnectionError::Common(e)))
+                if self.state.needs_fallback_http(&e) =>
+            {
+                self.state.fallback_http();
+                let url = self.state.blob_url(self.blob_id.as_str());
+                self.request::<&[u8]>(Method::HEAD, url.as_str(), HeaderMap::new())?
+            }
+            Err(e) => {
+                return Err(BackendError::Registry(e));
+            }
+        };
+
+        if resp.status() != StatusCode::OK {
+            return Err(BackendError::Registry(RegistryError::Response(format!(
+                "head blob size, status {}",
+                resp.status()
+            ))));
+        }
+
         let content_length = resp
             .headers()
             .get(CONTENT_LENGTH)
@@ -793,9 +768,7 @@ impl Registry {
                                     let new_cached_auth = format!("Bearer {}", token);
                                     info!("Authorization token for registry has been refreshed.");
                                     // Refresh authorization token
-                                    state
-                                        .cached_auth
-                                        .set(&state.cached_auth.get(), new_cached_auth);
+                                    state.cached_auth.set(new_cached_auth.as_str());
                                 }
                             }
                         }
@@ -864,9 +837,9 @@ mod tests {
 
         assert_eq!(cache.get(), "test");
 
-        cache.set("test", "test1".to_owned());
+        cache.set("test1".to_owned().as_str());
         assert_eq!(cache.get(), "test1");
-        cache.set("test1", "test1".to_owned());
+        cache.set("test1".to_owned().as_str());
         assert_eq!(cache.get(), "test1");
     }
 
@@ -902,12 +875,8 @@ mod tests {
         };
 
         assert_eq!(
-            state.url("image", &["blabla"]).unwrap(),
-            "http://alibaba-inc.com/v2/nydusimage?blabla".to_owned()
-        );
-        assert_eq!(
-            state.url("image", &[]).unwrap(),
-            "http://alibaba-inc.com/v2/nydusimage".to_owned()
+            state.blob_url("abcde"),
+            "http://alibaba-inc.com/v2/nydus/blobs/sha256:abcde".to_owned()
         );
     }
 

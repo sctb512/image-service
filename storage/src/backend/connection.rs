@@ -207,16 +207,6 @@ pub(crate) fn is_success_status(status: StatusCode) -> bool {
     status >= StatusCode::OK && status < StatusCode::BAD_REQUEST
 }
 
-/// Convert a HTTP `Response` into an `Result<Response>`.
-pub(crate) fn respond(resp: Response, catch_status: bool) -> ConnectionResult<Response> {
-    if !catch_status || is_success_status(resp.status()) {
-        Ok(resp)
-    } else {
-        let msg = resp.text().map_err(ConnectionError::Format)?;
-        Err(ConnectionError::ErrorWithMsg(msg))
-    }
-}
-
 /// A network connection to communicate with remote server.
 #[derive(Debug)]
 pub(crate) struct Connection {
@@ -405,6 +395,9 @@ impl Connection {
         self.shutdown.store(true, Ordering::Release);
     }
 
+    /// A low-level transport layer to backend storage via HTTP
+    /// Deal with HTTP proxy and mirror registries.
+    ///
     /// If the auth_through is enable, all requests are send to the mirror server.
     /// If the auth_through disabled, e.g. P2P/Dragonfly, we try to avoid sending
     /// non-authorization request to the mirror server, which causes performance loss.
@@ -420,7 +413,6 @@ impl Connection {
         query: Option<&[(&str, &str)]>,
         data: Option<ReqBody<R>>,
         headers: &mut HeaderMap,
-        catch_status: bool,
         // This means the request is dedicated to authorization.
         requesting_auth: bool,
     ) -> ConnectionResult<Response> {
@@ -449,8 +441,6 @@ impl Connection {
                     &query,
                     data_cloned,
                     headers,
-                    catch_status,
-                    true,
                 );
 
                 match result {
@@ -522,8 +512,6 @@ impl Connection {
                         &query,
                         data_cloned,
                         headers,
-                        catch_status,
-                        false,
                     );
 
                     match result {
@@ -560,16 +548,7 @@ impl Connection {
             }
         }
 
-        self.call_inner(
-            &self.client,
-            method,
-            url,
-            &query,
-            data,
-            headers,
-            catch_status,
-            false,
-        )
+        self.call_inner(&self.client, method, url, &query, data, headers)
     }
 
     fn build_connection(proxy: &str, config: &ConnectionConfig) -> Result<Client> {
@@ -609,8 +588,6 @@ impl Connection {
         query: &Option<&[(&str, &str)]>,
         data: Option<ReqBody<R>>,
         headers: &HeaderMap,
-        catch_status: bool,
-        proxy: bool,
     ) -> ConnectionResult<Response> {
         // Only clone header when debugging to reduce potential overhead.
         let display_headers = if max_level() >= Level::Debug {
@@ -647,20 +624,16 @@ impl Connection {
         }
 
         debug!(
-            "{} Request: {} {} headers: {:?}, proxy: {}, data: {}, duration: {}ms",
+            "{} Request: {} {} headers: {:?}, data: {}, duration: {}ms",
             std::thread::current().name().unwrap_or_default(),
             method,
             url,
             display_headers,
-            proxy,
             has_data,
             Instant::now().duration_since(start).as_millis(),
         );
 
-        match ret {
-            Err(err) => Err(ConnectionError::Common(err)),
-            Ok(resp) => respond(resp, catch_status),
-        }
+        ret.map_err(ConnectionError::Common)
     }
 }
 
