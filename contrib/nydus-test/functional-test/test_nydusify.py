@@ -19,10 +19,15 @@ ANCHOR = NydusAnchor()
         "cr-cn-guilin-boe.volces.com/vke/java:latest",
     ],
 )
+@pytest.mark.parametrize(
+    "is_compressed",
+    [True, False],
+)
 def test_basic_conversion(
     nydus_anchor: NydusAnchor,
     rafs_conf: RafsConf,
     source,
+    is_compressed,
     local_registry,
     nydusify_converter,
 ):
@@ -55,7 +60,7 @@ def test_basic_conversion(
         Backend.REGISTRY, repo=posixpath.basename(source).split(":")[0]
     )
     rafs_conf.enable_fs_prefetch()
-    rafs_conf.enable_rafs_blobcache()
+    rafs_conf.enable_rafs_blobcache(is_compressed=is_compressed)
     rafs_conf.dump_rafs_conf()
 
     rafs = NydusDaemon(nydus_anchor, None, rafs_conf)
