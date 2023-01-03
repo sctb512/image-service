@@ -3,14 +3,14 @@
 // SPDX-License-Identifier: (Apache-2.0 AND BSD-3-Clause)
 
 use std::any::Any;
-use std::fs::{metadata, OpenOptions};
+use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
 use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use nydus_api::http::BlobCacheList;
 use nydus_app::BuildTimeInfo;
@@ -20,7 +20,7 @@ use crate::daemon::{
     DaemonError, DaemonResult, DaemonState, DaemonStateMachineContext, DaemonStateMachineInput,
     DaemonStateMachineSubscriber,
 };
-use crate::upgrade::UpgradeManager;
+use crate::upgrade::{self, FscacheServiceState, UpgradeManager};
 use crate::{FsService, NydusDaemon, SubCmdArgs, DAEMON_CONTROLLER};
 #[cfg(target_os = "linux")]
 use nydus::ensure_threads;
@@ -101,7 +101,13 @@ impl ServiceController {
 
 #[cfg(target_os = "linux")]
 impl ServiceController {
-    fn initialize_fscache_service(&self, subargs: &SubCmdArgs, path: &str) -> Result<()> {
+    pub fn initialize_fscache_service(
+        &self,
+        tag: Option<&str>,
+        threads: usize,
+        path: &str,
+        file: Option<&File>,
+    ) -> Result<()> {
         // Validate --fscache option value is an existing directory.
         let p = match Path::new(&path).canonicalize() {
             Err(e) => {
@@ -123,13 +129,6 @@ impl ServiceController {
                 return Err(einval!("--fscache option contains invalid characters"));
             }
         };
-        let tag = subargs.value_of("fscache-tag");
-
-        let threads = if let Some(threads_value) = subargs.value_of("fscache-threads") {
-            ensure_threads(threads_value).map_err(|err| einval!(err))?
-        } else {
-            1usize
-        };
 
         info!(
             "Create fscache instance at {} with tag {}, {} working threads",
@@ -143,11 +142,21 @@ impl ServiceController {
             tag,
             self.blob_cache_mgr.clone(),
             threads,
+            file,
         )?;
         *self.fscache.lock().unwrap() = Some(Arc::new(fscache));
         self.fscache_enabled.store(true, Ordering::Release);
 
         Ok(())
+    }
+
+    fn get_fscache_file(&self) -> Result<File> {
+        if let Some(fscache) = self.fscache.lock().unwrap().clone() {
+            let f = fscache.get_file().try_clone()?;
+            Ok(f)
+        } else {
+            Err(einval!("fscache file not init"))
+        }
     }
 }
 
@@ -191,15 +200,19 @@ impl NydusDaemon for ServiceController {
     }
 
     fn save(&self) -> DaemonResult<()> {
-        Err(DaemonError::Unsupported)
+        upgrade::fscache_upgrade::save(self)
     }
 
     fn restore(&self) -> DaemonResult<()> {
-        Err(DaemonError::Unsupported)
+        upgrade::fscache_upgrade::restore(self)
     }
 
     fn get_default_fs_service(&self) -> Option<Arc<dyn FsService>> {
         None
+    }
+
+    fn upgrade_mgr(&self) -> Option<MutexGuard<UpgradeManager>> {
+        self.upgrade_mgr.as_ref().map(|mgr| mgr.lock().unwrap())
     }
 }
 
@@ -298,7 +311,25 @@ pub fn create_daemon(
     {
         #[cfg(target_os = "linux")]
         if let Some(path) = subargs.value_of("fscache") {
-            daemon.initialize_fscache_service(subargs, path)?;
+            let tag = subargs.value_of("fscache-tag");
+            let threads = if let Some(threads_value) = subargs.value_of("fscache-threads") {
+                ensure_threads(threads_value).map_err(|err| einval!(err))?
+            } else {
+                1usize
+            };
+            daemon.initialize_fscache_service(tag, threads, path, None)?;
+            let f = daemon.get_fscache_file()?;
+            if let Some(mut mgr_guard) = daemon.upgrade_mgr() {
+                mgr_guard.inner.lock().unwrap().hold_file(&f).map_err(|e| {
+                    error!("Failed to hold fscache fd, {:?}", e);
+                    eother!(e)
+                })?;
+                let state = FscacheServiceState {
+                    threads,
+                    path: path.to_string(),
+                };
+                upgrade::save_fscache_states(&mut mgr_guard, &state)?
+            }
         }
         daemon
             .on_event(DaemonStateMachineInput::Mount)

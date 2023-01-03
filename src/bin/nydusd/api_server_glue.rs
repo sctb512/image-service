@@ -23,6 +23,7 @@ use nydus_utils::metrics;
 
 use crate::daemon::{DaemonError, NydusDaemon};
 use crate::fs_service::{FsBackendMountCmd, FsBackendUmountCmd, FsService};
+use crate::upgrade;
 use crate::DAEMON_CONTROLLER;
 
 impl From<DaemonError> for DaemonErrorKind {
@@ -303,6 +304,16 @@ impl ApiServer {
                         "{}",
                         e
                     ))))
+                } else if let Some(mut mgr_guard) = self.get_daemon_object()?.upgrade_mgr() {
+                    // if started with supervisor, save the blob entry state
+                    if let Err(e) = upgrade::add_blob_entry_state(&mut mgr_guard, entry) {
+                        Err(ApiError::DaemonAbnormal(DaemonErrorKind::Other(format!(
+                            "{}",
+                            e
+                        ))))
+                    } else {
+                        Ok(ApiResponsePayload::Empty)
+                    }
                 } else {
                     Ok(ApiResponsePayload::Empty)
                 }
@@ -319,6 +330,19 @@ impl ApiServer {
                         "{}",
                         e
                     ))))
+                } else if let Some(mut mgr_guard) = self.get_daemon_object()?.upgrade_mgr() {
+                    if let Err(e) = upgrade::remove_blob_entry_state(
+                        &mut mgr_guard,
+                        &param.domain_id,
+                        &param.blob_id,
+                    ) {
+                        Err(ApiError::DaemonAbnormal(DaemonErrorKind::Other(format!(
+                            "{}",
+                            e
+                        ))))
+                    } else {
+                        Ok(ApiResponsePayload::Empty)
+                    }
                 } else {
                     Ok(ApiResponsePayload::Empty)
                 }
