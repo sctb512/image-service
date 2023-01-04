@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use nydus_api::http::BlobCacheEntry;
 use snapshot::{Persist, Snapshot};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
@@ -13,15 +14,18 @@ use fuse_backend_rs::api::{vfs::Vfs, VfsIndex};
 
 use nydus::FsBackendType;
 
-use upgrade::states_storage::SocketStatesStorage;
-pub use upgrade::{UpgradeManager as BytedUpgradeManager, UpgradeManagerError as UpgradeMgrError};
-
 use crate::daemon::{DaemonError, DaemonResult};
 use crate::fs_service::FsBackendUmountCmd;
 use crate::FsBackendMountCmd;
+use crate::DAEMON_CONTROLLER;
+use upgrade::states_storage::SocketStatesStorage;
+pub use upgrade::{UpgradeManager as BytedUpgradeManager, UpgradeManagerError as UpgradeMgrError};
 
 const MOUNT_STATE_ID_PREFIX: &str = "MOUNT.";
 const VFS_STATE_ID_PREFIX: &str = "VFS.";
+const BLOB_STATE_ID_PREFIX: &str = "BLOB.";
+const BLOB_STATE_ID_SLASH: &str = "/";
+const FSCACHE_SERVICE_ID_PREFIX: &str = "FSCACHE.";
 
 pub struct UpgradeManager {
     pub(crate) inner: Arc<Mutex<BytedUpgradeManager>>,
@@ -37,6 +41,12 @@ impl UpgradeManager {
 pub struct VfsIndexedMounts {
     fs_index: VfsIndex,
     cmd: FsBackendMountState,
+}
+
+#[derive(Versionize)]
+pub struct FscacheServiceState {
+    pub threads: usize,
+    pub path: String,
 }
 
 #[derive(Versionize)]
@@ -206,6 +216,166 @@ pub fn save_vfs_states(mgr: &mut UpgradeManager, vfs: &Vfs) -> DaemonResult<()> 
     mgr.inner()
         .save_state(&state_id, &vfs_states)
         .map_err(DaemonError::UpgradeManager)
+}
+
+pub fn add_blob_entry_state(mgr: &mut UpgradeManager, entry: &BlobCacheEntry) -> DaemonResult<()> {
+    let mut blob_state_id = BLOB_STATE_ID_PREFIX.to_string();
+    blob_state_id.push_str(&entry.domain_id);
+    blob_state_id.push_str(BLOB_STATE_ID_SLASH);
+    blob_state_id.push_str(&entry.blob_id);
+    let blob_state = entry.save();
+
+    mgr.inner
+        .lock()
+        .unwrap()
+        .deref_mut()
+        .save_state(&blob_state_id, &blob_state)
+        .map_err(DaemonError::UpgradeManager)
+}
+
+pub fn remove_blob_entry_state(
+    mgr: &mut UpgradeManager,
+    domain_id: &str,
+    blob_id: &str,
+) -> DaemonResult<()> {
+    let mut blob_state_id = BLOB_STATE_ID_PREFIX.to_string();
+    blob_state_id.push_str(domain_id);
+    blob_state_id.push_str(BLOB_STATE_ID_SLASH);
+    // for no shared domain mode, snapshotter will call unbind without blob_id
+    if !blob_id.is_empty() {
+        blob_state_id.push_str(blob_id);
+    } else {
+        blob_state_id.push_str(domain_id);
+    }
+
+    mgr.inner
+        .lock()
+        .unwrap()
+        .deref_mut()
+        .remove_state(&blob_state_id);
+
+    Ok(())
+}
+
+pub fn save_fscache_states(
+    mgr: &mut UpgradeManager,
+    stat: &FscacheServiceState,
+) -> DaemonResult<()> {
+    let fscache_service_id = FSCACHE_SERVICE_ID_PREFIX.to_string();
+
+    mgr.inner
+        .lock()
+        .unwrap()
+        .deref_mut()
+        .save_state(&fscache_service_id, stat)
+        .map_err(DaemonError::UpgradeManager)
+}
+
+#[cfg(target_os = "linux")]
+pub mod fscache_upgrade {
+    use snapshot::Snapshot;
+    use std::io::Cursor;
+    use std::ops::DerefMut;
+    use upgrade::UpgradeManagerError;
+
+    use crate::daemon::{DaemonError, DaemonResult, NydusDaemon};
+    use crate::service_controller::ServiceController;
+
+    use super::*;
+
+    pub fn save(daemon: &ServiceController) -> DaemonResult<()> {
+        if let Some(mut mgr) = daemon.upgrade_mgr() {
+            let um = mgr.deref_mut().inner.lock().unwrap();
+            um.persist_states().unwrap();
+        }
+        Ok(())
+    }
+
+    pub fn restore(daemon: &ServiceController) -> DaemonResult<()> {
+        if let Some(mut um) = daemon.upgrade_mgr() {
+            let mut mgr = um.deref_mut().inner.lock().unwrap();
+            let restored_um = mgr.fetch_states_and_restore().map_err(|e| {
+                error!("Failed to restore upgrade manager, {:?}", e);
+                DaemonError::UpgradeManager(e)
+            })?;
+
+            // Upgrade manager must be created during nydusd startup. Mainly because it must receive
+            // supervisor socket path and connect to external supervisor to fetch stored states back.
+            // As upgrade manager also act as a snapshot, recover it by swapping its states.
+            // Swap recovered states
+            mgr.swap_states(restored_um);
+
+            let mut fscache_state: Option<FscacheServiceState> = None;
+
+            if let Some(blob_mgr) = DAEMON_CONTROLLER.get_blob_cache_mgr() {
+                let states_ids = mgr.list_all_states_ids();
+                for id in &states_ids {
+                    let s = mgr
+                        .restore_state(id)
+                        .map_err(|e| {
+                            error!("Restore a single state error");
+                            DaemonError::UpgradeManager(e)
+                        })?
+                        .ok_or(DaemonError::NotFound)?;
+                    let vm = mgr.get_version_map();
+                    let len = s.len();
+                    let mut cursor = Cursor::new(s);
+
+                    if id.starts_with(BLOB_STATE_ID_PREFIX) {
+                        debug!("Restoring blob cache entry {}", id);
+                        let entry_stat = Snapshot::load(&mut cursor, len, vm)
+                            .map_err(|e| {
+                                error!("Failed to restore a single mount state, {:?}", e);
+                                UpgradeManagerError::Snapshot(e)
+                            })
+                            .map_err(DaemonError::UpgradeManager)?;
+
+                        let entry = BlobCacheEntry::restore((), &entry_stat).map_err(|e| {
+                            error!("blob entry restore failed, {:?}", e);
+                            DaemonError::Unsupported
+                        })?;
+
+                        blob_mgr.add_blob_entry(&entry).map_err(|e| {
+                            error!("add blob entry failed, {:?}", e);
+                            DaemonError::Unsupported
+                        })?;
+                    } else if id.starts_with(FSCACHE_SERVICE_ID_PREFIX) {
+                        fscache_state = Some(
+                            Snapshot::load(&mut cursor, len, vm)
+                                .map_err(|e| {
+                                    error!("Failed to restore a single mount state, {:?}", e);
+                                    UpgradeManagerError::Snapshot(e)
+                                })
+                                .map_err(DaemonError::UpgradeManager)?,
+                        )
+                    } else {
+                        warn!("Unknown state prefix {}", id);
+                    }
+                }
+
+                //init fscache handler with fd restored
+                if let Some(s) = fscache_state {
+                    if let Some(f) = mgr.return_file() {
+                        daemon
+                            .initialize_fscache_service(None, s.threads, &s.path, Some(&f))
+                            .map_err(|e| {
+                                error!("initialize fscache service failed, {:?}", e);
+                                DaemonError::Unsupported
+                            })?;
+                    } else {
+                        error!("Not found fscache service states!");
+                        return Err(DaemonError::Unsupported);
+                    }
+                } else {
+                    error!("Not found fscache service states!");
+                    return Err(DaemonError::Unsupported);
+                }
+
+                return Ok(());
+            }
+        }
+        Err(DaemonError::Unsupported)
+    }
 }
 
 pub mod fusedev_upgrade {

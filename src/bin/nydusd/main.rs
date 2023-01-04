@@ -684,11 +684,11 @@ fn process_fs_service(
 
 fn process_singleton_arguments(
     subargs: &SubCmdArgs,
-    _apisock: Option<&str>,
+    apisock: Option<&str>,
     bti: BuildTimeInfo,
 ) -> Result<()> {
     info!("Start Nydus in singleton mode!");
-    let daemon = create_daemon(subargs, bti).map_err(|e| {
+    let daemon = create_daemon(subargs, apisock, bti).map_err(|e| {
         error!("Failed to start singleton daemon: {}", e);
         e
     })?;

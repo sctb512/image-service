@@ -450,6 +450,10 @@ impl NydusDaemon for FusedevDaemon {
     fn get_default_fs_service(&self) -> Option<Arc<dyn FsService>> {
         Some(self.service.clone())
     }
+
+    fn upgrade_mgr(&self) -> Option<MutexGuard<UpgradeManager>> {
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]

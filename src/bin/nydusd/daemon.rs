@@ -12,7 +12,7 @@ use std::io::Result;
 use std::ops::Deref;
 use std::process::id;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::{error, fmt, io};
 
@@ -27,7 +27,7 @@ use crate::fs_service::{FsBackendCollection, FsService};
 use nydus_app::BuildTimeInfo;
 use rafs::RafsError;
 
-use crate::upgrade::UpgradeMgrError;
+use crate::upgrade::{UpgradeManager, UpgradeMgrError};
 
 #[allow(dead_code)]
 #[allow(clippy::upper_case_acronyms)]
@@ -241,6 +241,7 @@ pub trait NydusDaemon: DaemonStateMachineSubscriber + Send + Sync {
 
     // For backward compatibility.
     fn get_default_fs_service(&self) -> Option<Arc<dyn FsService>>;
+    fn upgrade_mgr(&self) -> Option<MutexGuard<UpgradeManager>>;
 }
 
 // State machine for Nydus daemon workflow.

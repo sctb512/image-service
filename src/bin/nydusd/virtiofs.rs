@@ -349,6 +349,10 @@ impl<S: 'static + VhostUserBackend<VringMutex> + Clone> NydusDaemon for Virtiofs
     fn get_default_fs_service(&self) -> Option<Arc<dyn FsService>> {
         Some(self.service.clone())
     }
+
+    fn upgrade_mgr(&self) -> Option<MutexGuard<UpgradeManager>> {
+        None
+    }
 }
 
 impl<S: 'static + VhostUserBackend<VringMutex> + Clone> DaemonStateMachineSubscriber

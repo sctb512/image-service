@@ -13,6 +13,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::{fs, thread};
 
+use snapshot::Persist;
+use versionize::{VersionMap, Versionize, VersionizeResult};
+use versionize_derive::Versionize;
+
 use dbs_uhttp::{Body, HttpServer, MediaType, Request, Response, ServerError, StatusCode, Version};
 use http::uri::Uri;
 use mio::unix::SourceFd;
@@ -287,6 +291,31 @@ pub struct BlobCacheEntry {
     pub domain_id: String,
 }
 
+#[derive(Versionize)]
+pub struct BlobCacheEntryState {
+    json_str: String,
+}
+
+impl Persist<'_> for BlobCacheEntry {
+    type State = BlobCacheEntryState;
+    type ConstructorArgs = ();
+    type Error = DaemonErrorKind;
+
+    fn save(&self) -> Self::State {
+        let str = serde_json::to_string(self).unwrap();
+        BlobCacheEntryState { json_str: str }
+    }
+
+    fn restore(
+        _constructor_args: Self::ConstructorArgs,
+        state: &Self::State,
+    ) -> std::result::Result<Self, Self::Error> {
+        match serde_json::from_str(&state.json_str) {
+            Ok(r) => Ok(r),
+            Err(e) => Err(DaemonErrorKind::Serde(e)),
+        }
+    }
+}
 /// Configuration information for a list of cached blob objects.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct BlobCacheList {
