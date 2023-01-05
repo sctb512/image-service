@@ -335,8 +335,8 @@ func main() {
 				&cli.StringFlag{
 					Name:        "fs-version",
 					Required:    false,
-					Value:       "5",
-					DefaultText: "V5 format",
+					Value:       "6",
+					DefaultText: "V6 format",
 					Usage:       "Nydus image format version number, possible values: 5, 6",
 					EnvVars:     []string{"FS_VERSION"},
 				},
@@ -787,8 +787,8 @@ func main() {
 					Required:    false,
 					Usage:       "Nydus image format version number, possible values: 5, 6",
 					EnvVars:     []string{"FS_VERSION"},
-					Value:       "5",
-					DefaultText: "V5 format",
+					Value:       "6",
+					DefaultText: "V6 format",
 				},
 				&cli.StringFlag{
 					Name:    "compressor",
