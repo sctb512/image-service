@@ -958,7 +958,10 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "snapshot",
  "url",
+ "versionize",
+ "versionize_derive",
  "vmm-sys-util",
 ]
 
