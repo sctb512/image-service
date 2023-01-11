@@ -526,8 +526,9 @@ impl RegistryReader {
             );
             self.state.cached_redirect.remove(&self.blob_id);
             if allow_retry {
-                // Only allow retrying for once.
-                self._try_read(buf, offset, false)
+                // Allow retry because the blob might be redirected after being
+                // re-authorized and the `cached_redirect` url has be dropped.
+                self._try_read(buf, offset, true)
             } else {
                 Err(RegistryError::Common(format!(
                     "no more retry, status {}, response {:?}",
