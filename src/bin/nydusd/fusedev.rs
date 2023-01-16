@@ -260,9 +260,8 @@ impl FsService for FusedevFsService {
                     };
 
                     #[cfg(target_env = "musl")]
-                    let ret = unsafe {
-                        libc::ioctl(fd, FUSE_RESEND_IOCTL_MSG_CODE as libc::c_int, 0 as i32)
-                    };
+                    let ret =
+                        unsafe { libc::ioctl(fd, FUSE_RESEND_IOCTL_MSG_CODE as libc::c_int, 0) };
 
                     if ret != 0 {
                         error!(
