@@ -409,7 +409,8 @@ impl Connection {
     pub fn call<R: Read + Clone + Send + 'static>(
         &self,
         method: Method,
-        url: &str,
+        original_url: &str,
+        redirect_url: Option<&str>,
         query: Option<&[(&str, &str)]>,
         data: Option<ReqBody<R>>,
         headers: &mut HeaderMap,
@@ -419,6 +420,12 @@ impl Connection {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(ConnectionError::Disconnected);
         }
+
+        let url = if let Some(redirect_url) = redirect_url {
+            redirect_url
+        } else {
+            original_url
+        };
 
         if let Some(proxy) = &self.proxy {
             if proxy.health.ok() {
@@ -502,8 +509,11 @@ impl Connection {
                         );
                     }
 
-                    let current_url = mirror.mirror_url(url)?;
-                    debug!("mirror server url {}", current_url);
+                    let current_url = mirror.mirror_url(original_url)?;
+                    debug!(
+                        "original url: {}, redirect url: {:?}, mirror server url {}",
+                        original_url, redirect_url, current_url
+                    );
 
                     let result = self.call_inner(
                         &self.client,

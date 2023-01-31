@@ -250,6 +250,7 @@ impl RegistryState {
             .call::<&[u8]>(
                 Method::GET,
                 auth.realm.as_str(),
+                None,
                 Some(&query),
                 Some(ReqBody::Form(form)),
                 &mut headers,
@@ -398,7 +399,8 @@ impl RegistryReader {
     fn request<R: Read + Clone + Send + 'static>(
         &self,
         method: Method,
-        url: &str,
+        original_url: &str,
+        redirect_url: Option<&str>,
         mut headers: HeaderMap,
     ) -> RegistryResult<Response> {
         let cached_auth = self.state.cached_auth.get();
@@ -412,7 +414,15 @@ impl RegistryReader {
         // Try to request registry server with `authorization` header
         let mut resp = self
             .connection
-            .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
+            .call::<&[u8]>(
+                method.clone(),
+                original_url,
+                redirect_url,
+                None,
+                None,
+                &mut headers,
+                false,
+            )
             .map_err(RegistryError::Request)?;
         if resp.status() == StatusCode::UNAUTHORIZED {
             if headers.contains_key(HEADER_AUTHORIZATION) {
@@ -427,7 +437,15 @@ impl RegistryReader {
 
                 resp = self
                     .connection
-                    .call::<&[u8]>(method.clone(), url, None, None, &mut headers, false)
+                    .call::<&[u8]>(
+                        method.clone(),
+                        original_url,
+                        redirect_url,
+                        None,
+                        None,
+                        &mut headers,
+                        false,
+                    )
                     .map_err(RegistryError::Request)?;
             };
 
@@ -449,7 +467,15 @@ impl RegistryReader {
                     // It's exactly a resend of the original request!
                     resp = self
                         .connection
-                        .call::<&[u8]>(method, url, None, None, &mut headers, false)
+                        .call::<&[u8]>(
+                            method,
+                            original_url,
+                            redirect_url,
+                            None,
+                            None,
+                            &mut headers,
+                            false,
+                        )
                         .map_err(RegistryError::Request)?;
                 }
             }
@@ -480,20 +506,26 @@ impl RegistryReader {
         let range = format!("bytes={}-{}", offset, end_at);
         headers.insert("Range", range.parse().unwrap());
 
-        let url = if let Some(redirect_url) = self.state.cached_redirect.get(&self.blob_id) {
-            redirect_url
-        } else {
-            self.state.blob_url(self.blob_id.as_str())
-        };
+        let original_url = self.state.blob_url(self.blob_id.as_str());
+        let redirect_url = self.state.cached_redirect.get(&self.blob_id);
 
-        let mut resp = match self.request::<&[u8]>(Method::GET, url.as_str(), headers.clone()) {
+        let mut resp = match self.request::<&[u8]>(
+            Method::GET,
+            original_url.as_str(),
+            redirect_url.as_deref(),
+            headers.clone(),
+        ) {
             Ok(res) => res,
             Err(RegistryError::Request(ConnectionError::Common(e)))
                 if self.state.needs_fallback_http(&e) =>
             {
                 self.state.fallback_http();
-                let url = self.state.blob_url(self.blob_id.as_str());
-                self.request::<&[u8]>(Method::GET, url.as_str(), headers.clone())?
+                self.request::<&[u8]>(
+                    Method::GET,
+                    original_url.as_str(),
+                    redirect_url.as_deref(),
+                    headers.clone(),
+                )?
             }
             Err(e) => {
                 return Err(e);
@@ -520,9 +552,8 @@ impl RegistryReader {
             }
         } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             warn!(
-                "The redirected link has expired: {}, status {}, will retry read",
-                url.as_str(),
-                status
+                "The redirected link has expired: {:?}, status {}, will retry read",
+                redirect_url, status
             );
             self.state.cached_redirect.remove(&self.blob_id);
             if allow_retry {
@@ -599,14 +630,14 @@ impl BlobReader for RegistryReader {
     fn blob_size(&self) -> BackendResult<u64> {
         let url = self.state.blob_url(self.blob_id.as_str());
 
-        let resp = match self.request::<&[u8]>(Method::HEAD, url.as_str(), HeaderMap::new()) {
+        let resp = match self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new()) {
             Ok(res) => res,
             Err(RegistryError::Request(ConnectionError::Common(e)))
                 if self.state.needs_fallback_http(&e) =>
             {
                 self.state.fallback_http();
                 let url = self.state.blob_url(self.blob_id.as_str());
-                self.request::<&[u8]>(Method::HEAD, url.as_str(), HeaderMap::new())?
+                self.request::<&[u8]>(Method::HEAD, url.as_str(), None, HeaderMap::new())?
             }
             Err(e) => {
                 return Err(BackendError::Registry(e));
