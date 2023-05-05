@@ -576,46 +576,53 @@ impl BlobMetaInfo {
         max_size: u64,
     ) -> Option<Vec<Arc<dyn BlobChunkInfo>>> {
         let infos = &*self.state.chunks;
+
+        let batch_end = chunks[0].compressed_offset() + max_size;
+        let first_idx = chunks[0].id() as usize;
+        let first_entry = &infos[first_idx];
+        if self.validate_chunk(first_entry).is_err() {
+            return None;
+        }
         let mut index = chunks[chunks.len() - 1].id() as usize;
         debug_assert!(index < infos.len());
         let entry = &infos[index];
         if self.validate_chunk(entry).is_err() {
             return None;
         }
-        let end = entry.compressed_end();
-        if end > self.state.compressed_size {
-            return None;
-        }
-        let batch_end = std::cmp::min(
-            end.checked_add(max_size).unwrap_or(end),
-            self.state.compressed_size,
-        );
-        if batch_end <= end {
-            return None;
-        }
 
-        let mut last_end = end;
-        let mut vec = chunks.to_vec();
-        while index + 1 < infos.len() {
-            index += 1;
+        let mut vec = Vec::with_capacity(128);
+
+        for idx in 0..chunks.len() - 1 {
+            let chunk = &chunks[idx];
+            let next = &chunks[idx + 1];
+            let next_end = next.compressed_offset() + next.compressed_size() as u64;
+            vec.push(chunk.clone());
+            if chunk.id() + 1 != next.id() && next_end <= batch_end {
+                for i in chunk.id() + 1..next.id() {
+                    let entry = &infos[i as usize];
+                    if self.validate_chunk(entry).is_ok() {
+                        vec.push(BlobMetaChunk::new(i as usize, &self.state));
+                    }
+                }
+            }
+        }
+        vec.push(chunks[chunks.len() - 1].clone());
+
+        index += 1;
+        while index < infos.len() {
             let entry = &infos[index];
-            if self.validate_chunk(entry).is_err() || entry.compressed_offset() != last_end {
-                break;
-            }
-
             // Avoid read amplification if next chunk is too big.
-            if entry.compressed_end() > batch_end {
+            if self.validate_chunk(entry).is_err() || entry.compressed_end() > batch_end {
                 break;
             }
-
             vec.push(BlobMetaChunk::new(index, &self.state));
-            last_end = entry.compressed_end();
-            if last_end >= batch_end {
-                break;
-            }
+            index += 1;
         }
 
-        trace!("try to extend request with {} more bytes", last_end - end);
+        trace!(
+            "try to extend request with {} more bytes",
+            index - batch_end as usize
+        );
 
         Some(vec)
     }

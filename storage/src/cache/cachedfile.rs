@@ -9,6 +9,7 @@
 //! performance. It may be used by both the userspace `FileCacheMgr` or the `FsCacheMgr` based
 //! on the in-kernel fscache system.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{ErrorKind, Result, Seek, SeekFrom};
 use std::mem::ManuallyDrop;
@@ -35,7 +36,7 @@ use crate::device::{
 };
 use crate::meta::{BlobMetaChunk, BlobMetaInfo};
 use crate::utils::{alloc_buf, copyv, readv, MemSliceCursor};
-use crate::{StorageError, StorageResult, RAFS_DEFAULT_CHUNK_SIZE};
+use crate::{StorageError, StorageResult, RAFS_BATCH_SIZE_TO_GAP_SHIFT, RAFS_DEFAULT_CHUNK_SIZE};
 
 const DOWNLOAD_META_RETRY_COUNT: u32 = 5;
 const DOWNLOAD_META_RETRY_DELAY: u64 = 400;
@@ -339,14 +340,24 @@ impl BlobCache for FileCacheEntry {
             }
 
             // Don't forget to clear its pending state whenever backend IO fails.
-            let blob_offset = pending[start].compressed_offset();
-            let blob_end = pending[end].compressed_offset() + pending[end].compressed_size() as u64;
+            // let blob_offset = pending[start].compressed_offset();
+            // let blob_end = pending[end].compressed_offset() + pending[end].compressed_size() as u64;
+            // let blob_size = (blob_end - blob_offset) as usize;
+
+            let chunks = &pending[start..=end];
+
+            let last = chunks.len() - 1;
+            let blob_offset = chunks[0].compressed_offset();
+            let blob_end =
+                pending[last].compressed_offset() + pending[last].compressed_size() as u64;
             let blob_size = (blob_end - blob_offset) as usize;
+
+            info!("[abin] [prefetch] blob_size: {}", blob_size);
 
             match self.read_chunks(
                 blob_offset,
                 blob_size,
-                &pending[start..=end],
+                chunks,
                 true,
                 !self.is_compressed,
                 Some(
@@ -411,6 +422,12 @@ impl BlobCache for FileCacheEntry {
             let mut state = FileIoMergeState::new();
             let mut cursor = MemSliceCursor::new(buffers);
             let req = BlobIoRange::new(&iovec.bi_vec[0], 1);
+            info!(
+                "[abin] [read] io range blob_offset: {} blob_size: {}, chunks: {}",
+                req.blob_offset,
+                req.blob_size,
+                req.chunks.len()
+            );
 
             self.dispatch_one_range(&req, &mut cursor, &mut state)
         } else {
@@ -554,6 +571,8 @@ impl FileCacheEntry {
                 chunks[end_idx].compressed_offset() + chunks[end_idx].compressed_size() as u64;
             let blob_size = (blob_end - blob_offset) as usize;
 
+            info!("[abin] [fetch] blob_size: {}", blob_size);
+
             match self.read_chunks(
                 blob_offset,
                 blob_size,
@@ -667,6 +686,13 @@ impl FileCacheEntry {
         let mut total_read: usize = 0;
 
         for req in requests {
+            info!(
+                "[abin] [read_iter] io range blob_offset: {} blob_size: {}, chunks: {}",
+                req.blob_offset,
+                req.blob_size,
+                req.chunks.len()
+            );
+
             total_read += self.dispatch_one_range(&req, &mut cursor, &mut state)?;
             state.reset();
         }
@@ -749,15 +775,33 @@ impl FileCacheEntry {
             }
         }
 
+        let (mut fast_num, mut slow_num, mut backend_num) = (0, 0, 0);
+
         for r in &state.regions {
             use RegionType::*;
 
             total_read += match r.r#type {
-                CacheFast => self.dispatch_cache_fast(cursor, r)?,
-                CacheSlow => self.dispatch_cache_slow(cursor, r)?,
-                Backend => self.dispatch_backend(cursor, r)?,
+                // CacheFast => self.dispatch_cache_fast(cursor, r)?,
+                // CacheSlow => self.dispatch_cache_slow(cursor, r)?,
+                // Backend => self.dispatch_backend(cursor, r)?,
+                CacheFast => {
+                    fast_num += 1;
+                    self.dispatch_cache_fast(cursor, r)?
+                }
+                CacheSlow => {
+                    slow_num += 1;
+                    self.dispatch_cache_slow(cursor, r)?
+                }
+                Backend => {
+                    backend_num += 1;
+                    self.dispatch_backend(cursor, r)?
+                }
             }
         }
+
+        info!(
+            "[abin] dispatch one range: fast: {fast_num}, slow: {slow_num}, backend: {backend_num}"
+        );
 
         Ok(total_read)
     }
@@ -787,7 +831,64 @@ impl FileCacheEntry {
         Ok(total_read)
     }
 
-    fn dispatch_backend(&self, mem_cursor: &mut MemSliceCursor, region: &Region) -> Result<usize> {
+    fn extend_pending_chunks(
+        &self,
+        chunks: &[Arc<dyn BlobChunkInfo>],
+        max_size: u64,
+    ) -> Result<Vec<Arc<dyn BlobChunkInfo>>> {
+        let batch_end = chunks[0].compressed_offset() + max_size;
+        let mut last_idx = chunks[chunks.len() - 1].id() as usize;
+        let mut vec = Vec::with_capacity(128);
+
+        for idx in 0..chunks.len() - 1 {
+            let chunk = &chunks[idx];
+            let next = &chunks[idx + 1];
+            let next_end = next.compressed_offset() + next.compressed_size() as u64;
+            vec.push(chunk.clone());
+            if chunk.id() + 1 != next.id() && next_end <= batch_end {
+                for i in chunk.id() + 1..next.id() {
+                    if let Some(meta) = self.meta.as_ref() {
+                        if let Some(bm) = meta.get_blob_meta() {
+                            vec.push(BlobMetaChunk::new(i as usize, &bm.state));
+                        } else {
+                            warn!("failed to get blob.meta for prefetch");
+                        }
+                    }
+                }
+            }
+        }
+        vec.push(chunks[chunks.len() - 1].clone());
+
+        last_idx += 1;
+        while last_idx < chunks.len() {
+            let entry = &chunks[last_idx];
+            // Avoid read amplification if next chunk is too big.
+            if entry.compressed_offset() + entry.compressed_size() as u64 > batch_end {
+                break;
+            }
+            if let Some(meta) = self.meta.as_ref() {
+                if let Some(bm) = meta.get_blob_meta() {
+                    vec.push(BlobMetaChunk::new(last_idx, &bm.state));
+                } else {
+                    warn!("failed to get blob.meta for prefetch");
+                }
+            }
+            last_idx += 1;
+        }
+
+        while !vec.is_empty() {
+            let chunk = &vec[vec.len() - 1];
+            if matches!(self.chunk_map.is_ready(chunk.as_ref()), Ok(true)) {
+                vec.pop();
+            } else {
+                break;
+            }
+        }
+        Ok(vec)
+    }
+
+    fn dispatch_backend(&self, mem_cursor: &mut MemSliceCursor, r: &Region) -> Result<usize> {
+        let mut region = r;
         if region.chunks.is_empty() {
             return Ok(0);
         } else if !region.has_user_io() {
@@ -797,6 +898,44 @@ impl FileCacheEntry {
             }
             return Ok(0);
         }
+        let merging_size = RAFS_DEFAULT_CHUNK_SIZE * 2;
+        if region.chunks.len() > 1 {
+            for idx in 0..region.chunks.len() - 1 {
+                let end = region.chunks[idx].compressed_offset()
+                    + region.chunks[idx].compressed_size() as u64;
+                let start = region.chunks[idx + 1].compressed_offset();
+                assert!(end <= start);
+                assert!(start - end <= merging_size >> RAFS_BATCH_SIZE_TO_GAP_SHIFT);
+                assert!(region.chunks[idx].id() < region.chunks[idx + 1].id());
+            }
+        }
+
+        let mut region_hold;
+        if let Ok(v) = self.extend_pending_chunks(&region.chunks, merging_size) {
+            if v.len() > r.chunks.len() {
+                let mut tag_set = HashSet::new();
+                for (idx, chunk) in region.chunks.iter().enumerate() {
+                    if region.tags[idx] {
+                        tag_set.insert(chunk.id());
+                    }
+                }
+                region_hold = Region::with(region, v);
+                for (idx, c) in region_hold.chunks.iter().enumerate() {
+                    if tag_set.contains(&c.id()) {
+                        region_hold.tags[idx] = true;
+                    }
+                }
+                region = &region_hold;
+                trace!(
+                    "extended blob request from 0x{:x}/0x{:x} to 0x{:x}/0x{:x} with {} chunks",
+                    region.blob_address,
+                    region.blob_len,
+                    region_hold.blob_address,
+                    region_hold.blob_len,
+                    region_hold.chunks.len(),
+                );
+            }
+        }
 
         let blob_size = region.blob_len as usize;
         debug!(
@@ -805,6 +944,8 @@ impl FileCacheEntry {
             blob_size,
             region.chunks.len()
         );
+
+        info!("[abin] [dispatch] blob_size: {}", r.blob_len);
 
         let mut chunks = self.read_chunks(
             region.blob_address,
@@ -1068,6 +1209,10 @@ impl FileCacheEntry {
         bios: &[BlobIoDesc],
         merging_size: usize,
     ) -> Option<Vec<BlobIoRange>> {
+        info!("[abin] bios len: {}", bios.len());
+        for bio in bios {
+            info!("[abin] bio offset: {} size: {}", bio.offset, bio.size);
+        }
         let mut requests: Vec<BlobIoRange> = Vec::with_capacity(bios.len());
 
         BlobIoMergeState::merge_and_issue(bios, merging_size, |mr: BlobIoRange| {
@@ -1130,7 +1275,7 @@ impl DataBuffer {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 enum RegionStatus {
     Init,
     Open,
@@ -1153,6 +1298,7 @@ impl RegionType {
     }
 }
 
+#[derive(Clone)]
 /// A continuous region in cache file or backend storage/blob, it may contain several chunks.
 struct Region {
     r#type: RegionType,
@@ -1181,6 +1327,27 @@ impl Region {
             blob_address: 0,
             blob_len: 0,
             seg: Default::default(),
+        }
+    }
+
+    fn with(region: &Region, chunks: Vec<Arc<dyn BlobChunkInfo>>) -> Self {
+        assert!(!chunks.is_empty());
+        let len = chunks.len();
+        let blob_address = chunks[0].compressed_offset();
+        let last = &chunks[len - 1];
+        let sz = last.compressed_offset() - blob_address;
+        assert!(sz < u32::MAX as u64);
+        let blob_len = sz as u32 + last.compressed_size();
+
+        Region {
+            r#type: region.r#type,
+            status: region.status,
+            count: len as u32,
+            chunks,
+            tags: vec![false; len],
+            blob_address,
+            blob_len,
+            seg: region.seg.clone(),
         }
     }
 

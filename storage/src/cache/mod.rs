@@ -32,7 +32,7 @@ use crate::device::{
     BlobChunkInfo, BlobInfo, BlobIoDesc, BlobIoRange, BlobIoVec, BlobObject, BlobPrefetchRequest,
 };
 use crate::utils::{alloc_buf, digest_check};
-use crate::{StorageResult, RAFS_MAX_CHUNK_SIZE};
+use crate::{StorageResult, RAFS_BATCH_SIZE_TO_GAP_SHIFT, RAFS_MAX_CHUNK_SIZE};
 
 mod cachedfile;
 mod dummycache;
@@ -78,22 +78,36 @@ impl<'a, F: FnMut(BlobIoRange)> BlobIoMergeState<'a, F> {
     /// Push the a new io descriptor into the pending list.
     #[inline]
     pub fn push(&mut self, bio: &'a BlobIoDesc) {
-        let size = bio.chunkinfo.compressed_size();
-
-        debug_assert!(self.size.checked_add(size).is_some());
+        let start = bio.chunkinfo.compressed_offset();
+        let size = if !self.bios.is_empty() {
+            let last = &self.bios[self.bios.len() - 1].chunkinfo;
+            let prev = last.compressed_offset() + last.compressed_size() as u64;
+            assert!(prev <= start);
+            assert!(start - prev < u32::MAX as u64);
+            (start - prev) as u32 + bio.chunkinfo.compressed_size()
+        } else {
+            bio.chunkinfo.compressed_size()
+        };
+        assert!(self.size.checked_add(size).is_some());
         self.bios.push(bio);
-        self.size += bio.chunkinfo.compressed_size();
     }
 
     /// Issue the pending io descriptors.
     #[inline]
-    pub fn issue(&mut self) {
+    pub fn issue(&mut self, max_gap: u64) {
         if !self.bios.is_empty() {
             let mut mr = BlobIoRange::new(self.bios[0], self.bios.len());
             for bio in self.bios[1..].iter() {
-                mr.merge(bio);
+                mr.merge(bio, max_gap);
             }
-            (self.cb)(mr);
+            (self.cb)(mr.clone());
+
+            info!(
+                "[abin] [issue] offset: {}, blob_size: {}, chunks number: {}",
+                mr.blob_offset,
+                mr.blob_size,
+                mr.chunks.len()
+            );
 
             self.bios.truncate(0);
             self.size = 0;
@@ -104,16 +118,17 @@ impl<'a, F: FnMut(BlobIoRange)> BlobIoMergeState<'a, F> {
     pub fn merge_and_issue(bios: &[BlobIoDesc], max_size: usize, op: F) {
         if !bios.is_empty() {
             let mut index = 1;
+            let max_gap = max_size as u64 >> RAFS_BATCH_SIZE_TO_GAP_SHIFT;
             let mut state = BlobIoMergeState::new(&bios[0], op);
 
             for cur_bio in &bios[1..] {
-                if !cur_bio.is_continuous(&bios[index - 1]) || state.size() >= max_size {
-                    state.issue();
+                if !cur_bio.is_continuous(&bios[index - 1], max_gap) || state.size() >= max_size {
+                    state.issue(max_gap);
                 }
                 state.push(cur_bio);
                 index += 1
             }
-            state.issue();
+            state.issue(max_gap);
         }
     }
 }
@@ -206,6 +221,7 @@ pub trait BlobCache: Send + Sync {
     ) -> Result<Vec<Vec<u8>>> {
         // Read requested data from the backend by altogether.
         let mut c_buf = alloc_buf(blob_size);
+
         let start = Instant::now();
         let nr_read = self
             .reader()
@@ -465,6 +481,9 @@ mod tests {
             size: 0x1000,
             user_io: true,
         };
+        let max_size = 0x4000;
+        let max_gap = max_size as u64 >> RAFS_BATCH_SIZE_TO_GAP_SHIFT;
+
         let mut state = BlobIoMergeState::new(&desc1, cb);
         assert_eq!(state.size(), 0x800);
         assert_eq!(state.bios.len(), 1);
@@ -480,7 +499,7 @@ mod tests {
         assert_eq!(state.size, 0x1000);
         assert_eq!(state.bios.len(), 2);
 
-        state.issue();
+        state.issue(max_gap);
         assert_eq!(state.size(), 0x0);
         assert_eq!(state.bios.len(), 0);
 
@@ -495,7 +514,7 @@ mod tests {
         assert_eq!(state.size, 0x800);
         assert_eq!(state.bios.len(), 1);
 
-        state.issue();
+        state.issue(max_gap);
         assert_eq!(state.size(), 0x0);
         assert_eq!(state.bios.len(), 0);
 
@@ -516,10 +535,12 @@ mod tests {
         assert_eq!(count, 2);
 
         let mut count = 0;
-        BlobIoMergeState::merge_and_issue(&[desc1.clone(), desc3.clone()], 0x4000, |_v| count += 1);
+        BlobIoMergeState::merge_and_issue(&[desc1.clone(), desc3.clone()], max_size, |_v| {
+            count += 1
+        });
         assert_eq!(count, 2);
 
-        assert!(desc2.is_continuous(&desc1));
-        assert!(!desc3.is_continuous(&desc1));
+        assert!(desc2.is_continuous(&desc1, max_size as u64 >> RAFS_BATCH_SIZE_TO_GAP_SHIFT));
+        assert!(!desc3.is_continuous(&desc1, max_size as u64 >> RAFS_BATCH_SIZE_TO_GAP_SHIFT));
     }
 }

@@ -686,6 +686,13 @@ impl BackendMetrics {
             let size_idx = request_size_index(size);
             self.read_cumulative_latency_millis_dist[size_idx].add(elapsed);
             self.read_count_block_size_dist[size_idx].inc();
+
+            let sizes = vec!["<1K", "1K~", "4K~", "16K~", "64K~", "128K~", "512K~", "1M~"];
+            let idx = sizes[size_idx];
+            let value = self.read_count_block_size_dist[size_idx].count();
+
+            info!("[abin] [metrics] size: {size}, sizes: {idx}, value: {value}");
+
             self.read_latency_sizes_dist[size_idx][lat_idx].inc();
         }
     }
