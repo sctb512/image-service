@@ -207,6 +207,13 @@ impl ConfigV2 {
             false
         }
     }
+
+    /// Fill authorization for registry backend.
+    pub fn update_registry_auth_info(&mut self, auth: &Option<String>) {
+        self.backend
+            .as_mut()
+            .map(|b| b.registry.as_mut().map(|r| r.auth = auth.clone()));
+    }
 }
 
 impl FromStr for ConfigV2 {
